@@ -31,6 +31,9 @@ environment with a tiling-compositor setup:
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every (daily) image build automatically picks up the newest
   version. It replaces Bazaar as the image's software and system manager.
+- **zswap instead of zram** — the `zram-generator` packages are removed. Swapped pages are compressed by the
+  kernel with `zstd` into a `zsmalloc` pool capped at 25% of RAM (with the shrinker enabled), backed by
+  whatever swap device you provide yourself. See [Swap: zswap instead of zram](#swap-zswap-instead-of-zram).
 - **[bun](https://bun.sh) + [OpenCode](https://opencode.ai)** are intentionally **not** baked into the image:
   on an atomic system, anything in `/usr` can only be updated with a new image deployment, so the
   self-contained agent tooling works better installed at user level, where it can be updated at any time.
@@ -84,6 +87,26 @@ deployments:
    Start `opencode`, invoke the agent-reflex skill (e.g. "install agent-reflex") and answer the classifier
    prompts in chat — the plugin then guards shell commands, compacts history, and tunes effort for your
    System One decision model.
+
+
+# Swap: zswap instead of zram
+
+Bazzite's swap-on-zram (`zram-generator`) is removed. Swapped pages are compressed by the kernel's
+[zswap](https://docs.kernel.org/admin-guide/mm/zswap.html) with `zstd` into a `zsmalloc` pool of up to 25% of
+RAM (shrinker enabled), spilling over to whatever swap device is present.
+
+The configuration ships in two independent places so it applies on every path:
+
+- `/usr/lib/bootc/kargs.d/20-gregos-zswap.toml` — kernel command line arguments, applied by bootc when it
+  creates this image's deployment.
+- `gregos-zswap-setup.service` — mirrors any parameter not already set on the kernel command line to
+  `/sys/kernel/zswap` early at boot. If you set your own `zswap.*=` arguments, those win and the service
+  skips them.
+
+No swap device ships with the image: create your own swap file or partition (see
+[the Bazzite swapfile guide](https://docs.bazzite.gg/Advanced/swapfile/)); zswap compresses in front of it
+either way. The live state is visible (and tunable) under `/sys/kernel/zswap/`, e.g.
+`cat /sys/kernel/zswap/current_pool_size`.
 
 
 # How to Use

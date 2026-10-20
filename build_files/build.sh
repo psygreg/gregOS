@@ -61,6 +61,24 @@ echo "Fetching LinuxToys: ${linuxtoys_url}"
 dnf5 install -y /tmp/linuxtoys.rpm
 rm -f /tmp/linuxtoys.rpm
 
+### Replace zram-generator with zswap
+##
+## Swap-on-zram is removed in favor of zswap: the kernel compresses swapped
+## pages in RAM, backed by whatever swap device the user provides (swap file
+## or partition, created outside of the image). The kernel is compiled with
+## CONFIG_ZSWAP=y but disabled by default and with lzo as the default
+## compressor, so the arguments in /usr/lib/bootc/kargs.d/20-gregos-zswap.toml
+## apply the wanted configuration when bootc creates this image's deployment.
+## For deployments that do not pick up bootc kernel arguments,
+## gregos-zswap-setup.service mirrors the same values to /sys/kernel/zswap
+## early on every boot (skipping any parameter already set on the kernel
+## command line, so explicit overrides win). No swap device is shipped.
+
+dnf5 remove -y zram-generator zram-generator-defaults
+# The defaults ship an unowned fallback at /etc/systemd/zram-generator.conf
+# that survives package removal; drop it explicitly.
+rm -f /etc/systemd/zram-generator.conf
+
 ### Remove KDE Plasma and GNOME desktops and their tied applications
 ##
 ## The base image is Bazzite (Kinoite-based) and ships KDE Plasma. niri +
@@ -124,6 +142,7 @@ systemctl enable greetd.service
 ln -sfn /usr/lib/systemd/system/greetd.service /etc/systemd/system/display-manager.service
 
 systemctl enable gregos-niri-config-seed.service
+systemctl enable gregos-zswap-setup.service
 
 #### Example for enabling a System Unit File
 

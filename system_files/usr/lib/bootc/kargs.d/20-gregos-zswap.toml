@@ -1,0 +1,14 @@
+# gregOS: run zswap instead of the removed zram-generator.
+# These kernel arguments are applied by bootc when it creates this image's
+# deployment; for deployments that do not pick them up, the same values are
+# mirrored to /sys/kernel/zswap early on every boot by
+# gregos-zswap-setup.service (which skips parameters already set here).
+# Kernel baseline checked at build time: CONFIG_ZSWAP=y (disabled by default,
+# lzo as default compressor) and CONFIG_ZSMALLOC=y (built in).
+kargs = [
+  "zswap.enabled=1",
+  "zswap.shrinker_enabled=1",
+  "zswap.compressor=zstd",
+  "zswap.max_pool_percent=25",
+  "zswap.zpool=zsmalloc",
+]

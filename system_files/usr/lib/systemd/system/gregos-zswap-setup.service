@@ -1,0 +1,14 @@
+[Unit]
+Description=Configure zswap early at boot (no-op for parameters set on the kernel cmdline)
+Documentation=https://docs.kernel.org/admin-guide/mm/zswap.html
+DefaultDependencies=no
+ConditionPathExists=/sys/kernel/zswap
+Before=swap.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /usr/libexec/gregos/zswap-setup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

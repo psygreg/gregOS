@@ -1,0 +1,29 @@
+#!/bin/bash
+# Mirrors the image's zswap configuration to /sys/kernel/zswap early at boot.
+# Only parameters that the kernel command line does not already set are
+# written, so kernel arguments — from /usr/lib/bootc/kargs.d or user
+# overrides — always win over this fallback.
+#
+# Overridable for testing: ZSWAP_SYSFS_DIR (default /sys/kernel/zswap).
+
+set -euo pipefail
+
+cmdline="${1:-/proc/cmdline}"
+sysfs_dir="${ZSWAP_SYSFS_DIR:-/sys/kernel/zswap}"
+
+# set_param <parameter name> <value>
+set_param() {
+    local param="$1" value="$2"
+    if grep -q -- "zswap.${param}=" "${cmdline}" 2>/dev/null; then
+        echo "gregos-zswap-setup: kernel cmdline sets zswap.${param}, not overridden"
+    else
+        echo "${value}" > "${sysfs_dir}/${param}"
+        echo "gregos-zswap-setup: zswap.${param} = ${value}"
+    fi
+}
+
+set_param enabled Y
+set_param shrinker_enabled Y
+set_param compressor zstd
+set_param max_pool_percent 25
+set_param zpool zsmalloc
