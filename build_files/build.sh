@@ -61,6 +61,58 @@ echo "Fetching LinuxToys: ${linuxtoys_url}"
 dnf5 install -y /tmp/linuxtoys.rpm
 rm -f /tmp/linuxtoys.rpm
 
+### bun, OpenCode, and the agent-reflex skill
+##
+## bun and OpenCode ship as system binaries in /usr/bin: on PATH for every
+## user and updated with image rebuilds (`bun upgrade` is intentionally not
+## used — /usr is read-only on bootc systems, and /usr/local must be avoided:
+## it is a symlink into /var, which the deployment does not take from the
+## image). User-level package management stays "as usual": `bun add -g <pkg>`
+## lands in ~/.bun/bin, which the shipped /etc/profile.d snippet puts on PATH.
+##
+## opencode-ai's postinstall script hangs under bun's script runner in
+## container builds, so its effect (copying the platform binary over the
+## package's bin stub) is replicated directly.
+##
+## The agent-reflex SKILL is per-user data (OpenCode loads it from
+## ~/.agents/skills), so it is seeded into /etc/skel for new users and copied
+## into existing user homes by gregos-niri-config-seed.service. The
+## agent-reflex PLUGIN itself is installed interactively through that skill
+## (a fresh install asks for the System One classifier endpoint): start
+## OpenCode, invoke the skill, and answer the prompts in chat.
+
+curl -fsSL --retry 2 \
+    https://github.com/oven-sh/bun/releases/latest/download/bun-linux-x64.zip \
+    -o /tmp/bun.zip
+unzip -q /tmp/bun.zip -d /tmp/bunzip
+install -m 0755 /tmp/bunzip/bun-linux-x64/bun /usr/bin/bun
+ln -sfn bun /usr/bin/bunx
+
+export BUN_INSTALL=/usr DO_NOT_TRACK=1
+bun install -g --ignore-scripts opencode-ai
+# What opencode-ai's postinstall would do: place the platform binary over the
+# package's bin stub. /usr/install/global holds bun's global package payload.
+install -m 0755 \
+    /usr/install/global/node_modules/opencode-linux-x64/bin/opencode \
+    /usr/install/global/node_modules/opencode-ai/bin/opencode.exe
+rm -rf /usr/install/cache
+
+# Smoke-test both binaries. opencode does a non-recursive mkdir of
+# ~/.local/share, so point HOME at a prepared throwaway home (on bootc
+# images /root is a symlink to /var/roothome, which does not exist at
+# build time). /etc/skel gets .local/share so opencode works on first
+# login for new users.
+mkdir -p /tmp/oc-home/.local/share /etc/skel/.local/share
+HOME=/tmp/oc-home bun --version
+HOME=/tmp/oc-home opencode --version
+
+# Seed the agent-reflex skill for new users; the skills CLI resolves the
+# canonical ~/.agents/skills location from $HOME.
+HOME=/etc/skel XDG_CACHE_HOME=/tmp/cache BUN_INSTALL=/tmp/bunhome \
+    bunx skills add psygreg/agent-reflex --skill agent-reflex -a opencode -g -y
+mkdir -p /usr/share/gregos/skills
+cp -avf /etc/skel/.agents/skills/agent-reflex /usr/share/gregos/skills/
+
 ### Remove KDE Plasma and GNOME desktops and their tied applications
 ##
 ## The base image is Bazzite (Kinoite-based) and ships KDE Plasma. niri +

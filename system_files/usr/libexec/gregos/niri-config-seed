@@ -1,14 +1,16 @@
 #!/bin/bash
-# Seeds the image's niri + Noctalia desktop configuration into existing user
-# homes that do not have one yet (for example right after rebasing a Bazzite
-# system to this image). Files are only ever added: an existing niri or
-# Noctalia configuration is never touched. New accounts get the same files
-# from /etc/skel at account creation.
+# Seeds the image's per-user desktop configuration into existing user homes
+# that do not have it yet (for example right after rebasing a Bazzite system
+# to this image): the niri + Noctalia configuration, the Noctalia defaults,
+# and the agent-reflex skill for OpenCode. Files are only ever added: anything
+# a user already has is never touched. New accounts get the same files from
+# /etc/skel at account creation.
 
 set -euo pipefail
 
 niri_src="/usr/share/gregos/niri"
 noctalia_src="/usr/share/gregos/noctalia"
+skill_src="/usr/share/gregos/skills/agent-reflex"
 
 shopt -s nullglob
 for home in /home/*/; do
@@ -34,5 +36,15 @@ for home in /home/*/; do
             "${noctalia_src}/10-gregos-defaults.toml" \
             "${home}/.config/noctalia/10-gregos-defaults.toml"
         echo "gregos-niri-config-seed: installed Noctalia defaults for ${home}"
+    fi
+
+    # The agent-reflex skill for OpenCode. Only ever added when missing: if the
+    # user installed or updated it through the skills CLI themselves, that copy
+    # is left untouched (the agent-reflex installer also detects it).
+    if [[ -d "${skill_src}" && ! -e "${home}/.agents/skills/agent-reflex/SKILL.md" ]]; then
+        [[ -d "${home}/.agents/skills" ]] || install -d -m 0755 -o "${uid}" -g "${gid}" "${home}/.agents/skills"
+        cp -r "${skill_src}" "${home}/.agents/skills/agent-reflex"
+        chown -R "${uid}:${gid}" "${home}/.agents/skills/agent-reflex"
+        echo "gregos-niri-config-seed: installed agent-reflex skill for ${home}"
     fi
 done

@@ -1,5 +1,5 @@
 [Unit]
-Description=Seed niri + Noctalia desktop configuration for existing users
+Description=Seed gregOS user configuration (niri, Noctalia, agent-reflex skill)
 Documentation=https://github.com/psygreg/gregOS
 ConditionPathExists=/usr/share/gregos/niri/config.kdl
 After=local-fs.target

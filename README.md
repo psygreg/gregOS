@@ -31,6 +31,14 @@ environment with a tiling-compositor setup:
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every (daily) image build automatically picks up the newest
   version. It replaces Bazaar as the image's software and system manager.
+- **[bun](https://bun.sh) + [OpenCode](https://opencode.ai)** — both binaries ship system-wide in `/usr/bin`
+  and are updated with image rebuilds. bun's package management stays user-level as usual: `bun add -g <pkg>`
+  lands in `~/.bun/bin`, which `/etc/profile.d/gregos-bun.sh` puts on PATH.
+- **[agent-reflex](https://github.com/psygreg/agent-reflex)** — the skill for OpenCode is seeded per user
+  (`~/.agents/skills/agent-reflex`, via `/etc/skel` + the first-boot seeder). The agent-reflex *plugin* is
+  installed interactively through the skill inside OpenCode: a fresh install asks for the System One
+  classifier endpoint (llama.cpp, Ollama, LM Studio, TypeSafe, OpenRouter, Vercel AI Gateway, OpenCode Zen, or
+  a custom URL), so start OpenCode, invoke the skill, and answer in chat.
 
 Configuration lives in `dotfiles/` and is deployed three ways at build time:
 
@@ -56,6 +64,9 @@ Configuration lives in `dotfiles/` and is deployed three ways at build time:
 - The greeter remembers the last session and user picked; niri is the default session. Noctalia's settings
   app (`Mod+Comma`) manages the shell, and its polkit agent is pre-enabled via
   `~/.config/noctalia/10-gregos-defaults.toml`.
+- OpenCode is preinstalled with the agent-reflex skill. First run: start `opencode`, invoke the agent-reflex
+  skill (e.g. "install agent-reflex") and answer the classifier prompts in chat — the plugin then guards
+  shell commands, compacts history, and tunes effort for your System One decision model.
 
 
 # How to Use
