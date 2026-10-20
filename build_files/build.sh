@@ -70,9 +70,9 @@ rm -f /tmp/linuxtoys.rpm
 ## image). User-level package management stays "as usual": `bun add -g <pkg>`
 ## lands in ~/.bun/bin, which the shipped /etc/profile.d snippet puts on PATH.
 ##
-## opencode-ai's postinstall script hangs under bun's script runner in
-## container builds, so its effect (copying the platform binary over the
-## package's bin stub) is replicated directly.
+## opencode is installed with its official command
+## (`bun install -g --trust @opencode/cli`) — the --trust flag allows the
+## package's postinstall to link the platform binary.
 ##
 ## The agent-reflex SKILL is per-user data (OpenCode loads it from
 ## ~/.agents/skills), so it is seeded into /etc/skel for new users and copied
@@ -89,12 +89,7 @@ install -m 0755 /tmp/bunzip/bun-linux-x64/bun /usr/bin/bun
 ln -sfn bun /usr/bin/bunx
 
 export BUN_INSTALL=/usr DO_NOT_TRACK=1
-bun install -g --ignore-scripts opencode-ai
-# What opencode-ai's postinstall would do: place the platform binary over the
-# package's bin stub. /usr/install/global holds bun's global package payload.
-install -m 0755 \
-    /usr/install/global/node_modules/opencode-linux-x64/bin/opencode \
-    /usr/install/global/node_modules/opencode-ai/bin/opencode.exe
+bun install -g --trust @opencode/cli
 rm -rf /usr/install/cache
 
 # Smoke-test both binaries. opencode does a non-recursive mkdir of
