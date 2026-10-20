@@ -1,0 +1,18 @@
+# gregOS: additional kernel command line tweaks, applied by bootc when it
+# creates this image's deployment. The parameters are x86-specific, so they
+# are scoped to that architecture and skipped elsewhere.
+
+match-architectures = [ "x86_64" ]
+
+kargs = [
+  # Split-lock #AC detection throttles the offending thread, and desktop
+  # apps — especially games run through Proton/Wine — routinely trigger it,
+  # causing periodic stutter. Kernel throttling is therefore disabled.
+  "split_lock_detect=off",
+
+  # Do not advertise/enable UMIP: some games' anti-tamper/DRM layers check
+  # for UMIP and take a degraded path on UMIP-capable CPUs (reported for
+  # Monster Hunter Wilds). Tradeoff: userland loses the SGDT/SIDT
+  # kernel-address-leak protection UMIP provides.
+  "clearcpuid=umip",
+]
