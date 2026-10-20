@@ -14,21 +14,23 @@ If you have questions about this template after following the instructions, try 
 This image is based on `ghcr.io/ublue-os/bazzite:stable` (Fedora 44) and replaces the traditional desktop
 environment with a tiling-compositor setup:
 
-- **[niri](https://github.com/YaLTeu/niri)** - scrollable-tiling Wayland compositor (Fedora package, 25.11).
+- **[niri](https://github.com/YaLTeu/niri)** - scrollable-tiling Wayland compositor (Fedora package).
 - **[Noctalia](https://github.com/noctalia-dev/noctalia)** - the desktop shell layered on top of niri: bar,
   launcher, control center, notifications, lock screen, wallpaper, OSDs, clipboard, tray, and its own polkit
   agent (Fedora package, F44+).
 - **[Noctalia Greeter](https://github.com/noctalia-dev/noctalia-greeter)** + **greetd** - the login screen.
   Sourced from the [Terra](https://terrapkg.com) repository; the repo is used at build time and left disabled
   afterwards, matching how Bazzite itself consumes Terra. The greeter runs as the `greeter` system account
-  (created by `system_files/usr/lib/sysusers.d/gregos-niri.conf`).
+  (declared via `system_files/usr/lib/sysusers.d/gregos-niri.conf`).
+- **GTK theming** - `adw-gtk3-theme` (Fedora repos) applied with `nwg-look` (Terra), the GTK look-and-feel
+  editor for Wayland; Qt apps are themed with `qt6ct`.
 - KDE Plasma and GNOME desktops and their tied applications are **removed** at build time
   (see `REMOVE_PATTERNS` in [build_files/build.sh](./build_files/build.sh)). Everything else Bazzite ships is
-  untouched: Steam, Lutris, gamescope, drivers, ujust, Bazaar, Bazzite Portal, Waydroid, Cockpit, the audio
-  stack, and so on.
+  untouched: Steam, Lutris, gamescope, drivers, ujust, Bazzite Portal, Waydroid, Cockpit, the audio stack, and
+  so on. **Bazaar** is removed as well — software and system management is centered on LinuxToys instead.
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every (daily) image build automatically picks up the newest
-  version.
+  version. It replaces Bazaar as the image's software and system manager.
 
 Configuration lives in `dotfiles/` and is deployed three ways at build time:
 
@@ -48,8 +50,9 @@ Configuration lives in `dotfiles/` and is deployed three ways at build time:
 - Portals: `xdg-desktop-portal-gtk` + `xdg-desktop-portal-gnome` (niri's screencast path), per niri/Noctalia
   recommendations. Xwayland apps run through `xwayland-satellite`, which is a dependency of the Fedora niri
   package.
-- Qt apps use `qt6ct`, and the cursor theme is Adwaita (`adwaita-cursor-theme`), since the DMZ cursor themes
-  referenced in earlier iterations are no longer packaged in Fedora.
+- Qt apps use `qt6ct`, and GTK apps can be themed with `nwg-look` + `adw-gtk3-theme` (run `nwg-look` once to
+  apply). The cursor theme is Adwaita (`adwaita-cursor-theme`), since the DMZ cursor themes referenced in
+  earlier iterations are no longer packaged in Fedora.
 - The greeter remembers the last session and user picked; niri is the default session. Noctalia's settings
   app (`Mod+Comma`) manages the shell, and its polkit agent is pre-enabled via
   `~/.config/noctalia/10-gregos-defaults.toml`.

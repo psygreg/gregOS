@@ -12,9 +12,6 @@ cp -avf "/ctx/system_files"/. /
 # List of rpmfusion packages can be found here:
 # https://mirrors.rpmfusion.org/mirrorlist?path=free/fedora/updates/43/x86_64/repoview/index.html&protocol=https&redirect=1
 
-# this installs a package from fedora repos
-dnf5 install -y tmux
-
 ### niri + Noctalia desktop
 ##
 ## The desktop experience of this image is the niri Wayland compositor with
@@ -22,9 +19,9 @@ dnf5 install -y tmux
 ## instead of a traditional desktop environment.
 ##
 ## Package sources:
-##   - niri, greetd, portals, cursor/icon themes: Fedora repos
+##   - niri, greetd, portals, cursor/icon themes, adw-gtk3 theme: Fedora repos
 ##   - noctalia (the shell): Fedora repos (Fedora 44+)
-##   - noctalia-greeter: Terra community repo. Bazzite already ships
+##   - noctalia-greeter, nwg-look: Terra community repo. Bazzite already ships
 ##     terra-release with the Terra repos disabled, so install through the
 ##     repo and leave it disabled again afterwards (the same way Bazzite
 ##     itself consumes Terra packages).
@@ -34,16 +31,20 @@ dnf5 install -y \
     niri \
     noctalia \
     qt6ct \
+    adw-gtk3-theme \
     adwaita-cursor-theme \
     adwaita-icon-theme \
     xdg-desktop-portal-gnome \
     xdg-desktop-portal-gtk
 
-dnf5 install -y --nogpgcheck \
-    --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' \
-    terra-release
-dnf5 install -y --enable-repo=terra --enable-repo=terra-extras noctalia-greeter
-sed -i 's@enabled=1@enabled=0@g' /etc/yum.repos.d/terra*.repo
+### Install noctalia-greeter and nwg-look from the Terra repository
+##
+## Neither is in Fedora's own repos yet. Bazzite already carries
+## terra-release with the Terra repos disabled, so enable them just for this
+## transaction (--enable-repo does not change the repo files on disk) and
+## leave everything as shipped afterwards.
+
+dnf5 install -y --enable-repo=terra --enable-repo=terra-extras noctalia-greeter nwg-look
 
 ### Install LinuxToys from its latest GitHub release
 ##
@@ -64,18 +65,24 @@ rm -f /tmp/linuxtoys.rpm
 ##
 ## The base image is Bazzite (Kinoite-based) and ships KDE Plasma. niri +
 ## Noctalia replaces it as the only desktop. Everything not tied to the
-## desktop environments is kept: Steam, gamescope, drivers, ujust, Bazaar,
-## Bazzite Portal, Waydroid, Cockpit, the audio stack, and so on. Packages
-## that depend on the removed ones are dropped automatically as well.
+## desktop environments is kept: Steam, gamescope, drivers, ujust, Bazzite
+## Portal, Waydroid, Cockpit, the audio stack, and so on. Bazaar is removed
+## too: software and system management is centered on LinuxToys instead.
+## Packages that depend on the removed ones are dropped automatically as
+## well (krunner-bazaar is caught by the krunner pattern below).
 
-REMOVE_PATTERNS='^(plasma-|kwin|kde|kf5-|kf6-|kio|kded|kinit|konsole|dolphin|kate|kwrite|ark|gwenview|okular|spectacle|kcalc|kfind|kdialog|kmenuedit|kinfocenter|ksystemlog|ksystemstats|kcharselect|kcolorchooser|skanpage|svgpart|kamera|print-manager|drkonqi|milou|kactivity|kwayland|kpipewire|kdecoration|breeze|oxygen|sddm|polkit-kde|xdg-desktop-portal-kde|layer-shell-qt|qqc2|libplasma|libkworkspace|libkdcraw|libkexiv2|libksane|kimageformat|khelpcenter|kfilemetadata|baloo|ksshaskpass|kwallet|krunner|kscreen|khotkeys|kuserfeedback|gnome-shell|gnome-session|gnome-settings-daemon|gnome-control-center|gnome-tour|gnome-initial-setup|gnome-software|gnome-classic-session|gnome-text-editor|gnome-calculator|gnome-font-viewer|gnome-logs|gnome-weather|gnome-maps|gnome-characters|gnome-clocks|gnome-contacts|gnome-connections|gnome-photos|gnome-screenshot|gnome-system-monitor)'
+REMOVE_PATTERNS='^(bazaar|plasma-|kwin|kde|kf5-|kf6-|kio|kded|kinit|konsole|dolphin|kate|kwrite|ark|gwenview|okular|spectacle|kcalc|kfind|kdialog|kmenuedit|kinfocenter|ksystemlog|ksystemstats|kcharselect|kcolorchooser|skanpage|svgpart|kamera|print-manager|drkonqi|milou|kactivity|kwayland|kpipewire|kdecoration|breeze|oxygen|sddm|polkit-kde|xdg-desktop-portal-kde|layer-shell-qt|qqc2|libplasma|libkworkspace|libkdcraw|libkexiv2|libksane|kimageformat|khelpcenter|kfilemetadata|baloo|ksshaskpass|kwallet|krunner|kscreen|khotkeys|kuserfeedback|gnome-shell|gnome-session|gnome-settings-daemon|gnome-control-center|gnome-tour|gnome-initial-setup|gnome-software|gnome-classic-session|gnome-text-editor|gnome-calculator|gnome-font-viewer|gnome-logs|gnome-weather|gnome-maps|gnome-characters|gnome-clocks|gnome-contacts|gnome-connections|gnome-photos|gnome-screenshot|gnome-system-monitor)'
 
 desktop_pkgs="$(rpm -qa --qf '%{NAME}\n' | grep -E "${REMOVE_PATTERNS}" | sort -u || true)"
 if [[ -n "${desktop_pkgs}" ]]; then
     echo "Removing desktop environment packages:"
     printf '%s\n' "${desktop_pkgs}"
-    printf '%s\n' "${desktop_pkgs}" | xargs -r dnf5 -y remove --allowerasing
+    printf '%s\n' "${desktop_pkgs}" | xargs -r dnf5 -y remove
 fi
+
+# Bazaar's curated-flatpak configuration is baked into the base image (not
+# owned by any RPM); remove it along with the app.
+rm -rfv /usr/share/ublue-os/bazaar
 
 ### Deploy the shipped niri + Noctalia configuration
 ##
@@ -96,8 +103,9 @@ cp -avf /ctx/dotfiles/noctalia/. /etc/skel/.config/noctalia/
 ### Login manager: greetd + Noctalia Greeter
 ##
 ## Replaces KDE's login manager (plasma-login-manager / SDDM). The greeter
-## runs as the "greeter" system account (created by the shipped sysusers.d
-## rule) and offers the niri session.
+## runs as the "greeter" system account (provided by greetd and added to the
+## video/input groups by the shipped sysusers.d rule) and offers the niri
+## session.
 
 cat > /etc/greetd/config.toml <<'EOF'
 # Managed by gregOS - greetd running the Noctalia greeter
