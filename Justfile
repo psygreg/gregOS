@@ -124,6 +124,13 @@ build $target_image=image_name $tag=default_tag:
     # This actually builds the image!
     PODMAN_BUILD_ARGS=("${BUILD_ARGS[@]}" "${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile)
 
+    # Pass the GitHub API token through to the build (used by build.sh when
+    # fetching release assets). Builds without it fall back to anonymous
+    # access.
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        PODMAN_BUILD_ARGS+=("--secret" "id=GITHUB_TOKEN,src=env:GITHUB_TOKEN")
+    fi
+
     podman build "${PODMAN_BUILD_ARGS[@]}" .
 
 # Split the image for smaller updates (New)!

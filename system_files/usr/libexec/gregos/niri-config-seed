@@ -1,0 +1,38 @@
+#!/bin/bash
+# Seeds the image's niri + Noctalia desktop configuration into existing user
+# homes that do not have one yet (for example right after rebasing a Bazzite
+# system to this image). Files are only ever added: an existing niri or
+# Noctalia configuration is never touched. New accounts get the same files
+# from /etc/skel at account creation.
+
+set -euo pipefail
+
+niri_src="/usr/share/gregos/niri"
+noctalia_src="/usr/share/gregos/noctalia"
+
+shopt -s nullglob
+for home in /home/*/; do
+    home="${home%/}"
+    uid="$(stat -c '%u' "${home}")"
+    gid="$(stat -c '%g' "${home}")"
+
+    # Real users only; never touch root-owned leftovers like lost+found.
+    [[ "${uid}" -ge 1000 ]] || continue
+
+    if [[ ! -e "${home}/.config/niri/config.kdl" ]]; then
+        [[ -d "${home}/.config" ]] || install -d -m 0700 -o "${uid}" -g "${gid}" "${home}/.config"
+        [[ -d "${home}/.config/niri" ]] || install -d -m 0755 -o "${uid}" -g "${gid}" "${home}/.config/niri"
+        install -m 0644 -o "${uid}" -g "${gid}" "${niri_src}/config.kdl" "${home}/.config/niri/config.kdl"
+        install -m 0644 -o "${uid}" -g "${gid}" "${niri_src}/noctalia.kdl" "${home}/.config/niri/noctalia.kdl"
+        echo "gregos-niri-config-seed: installed niri config for ${home}"
+    fi
+
+    if [[ ! -e "${home}/.config/noctalia/10-gregos-defaults.toml" ]]; then
+        [[ -d "${home}/.config" ]] || install -d -m 0700 -o "${uid}" -g "${gid}" "${home}/.config"
+        [[ -d "${home}/.config/noctalia" ]] || install -d -m 0755 -o "${uid}" -g "${gid}" "${home}/.config/noctalia"
+        install -m 0644 -o "${uid}" -g "${gid}" \
+            "${noctalia_src}/10-gregos-defaults.toml" \
+            "${home}/.config/noctalia/10-gregos-defaults.toml"
+        echo "gregos-niri-config-seed: installed Noctalia defaults for ${home}"
+    fi
+done

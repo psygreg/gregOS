@@ -1,0 +1,11 @@
+# Default Noctalia settings shipped by gregOS.
+#
+# Noctalia merges every *.toml file in ~/.config/noctalia/; changes made in
+# the Settings app are stored separately (~/.local/state/noctalia/settings.toml)
+# and win over this file.
+
+[shell]
+# Enable Noctalia's built-in polkit agent. Recommended under niri so
+# authorization prompts (e.g. NetworkManager, disks) can be answered without a
+# separate polkit agent.
+polkit_agent = true

@@ -1,0 +1,18 @@
+#!/bin/bash
+# curl wrapper that authenticates GitHub API requests with the GITHUB_TOKEN
+# build secret when it is provided (CI). Authenticated requests get a much
+# higher api.github.com rate limit; anonymous access is used as a fallback so
+# local builds keep working without the secret.
+
+set -euo pipefail
+
+token=""
+if [[ -r /run/secrets/GITHUB_TOKEN ]]; then
+    token="$(tr -d '[:space:]' < /run/secrets/GITHUB_TOKEN)"
+fi
+
+if [[ -n "${token}" ]]; then
+    exec curl -fsSL -H "Authorization: Bearer ${token}" "$@"
+fi
+
+exec curl -fsSL "$@"

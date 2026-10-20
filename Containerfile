@@ -2,6 +2,7 @@
 FROM scratch AS ctx
 COPY build_files /
 COPY system_files /system_files
+COPY dotfiles /dotfiles
 
 # Base Image
 FROM ghcr.io/ublue-os/bazzite:stable
@@ -33,6 +34,7 @@ FROM ghcr.io/ublue-os/bazzite:stable
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
+    --mount=type=secret,id=GITHUB_TOKEN \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build.sh
 
