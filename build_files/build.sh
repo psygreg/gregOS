@@ -61,6 +61,34 @@ echo "Fetching LinuxToys: ${linuxtoys_url}"
 dnf5 install -y /tmp/linuxtoys.rpm
 rm -f /tmp/linuxtoys.rpm
 
+### Replace Lutris with Heroic Games Launcher
+##
+## Lutris (shipped by Bazzite) is removed in favor of Heroic Games
+## Launcher, installed from its latest GitHub release the same way
+## LinuxToys is: resolve the current RPM asset through the GitHub API and
+## install it. The GITHUB_TOKEN build secret (wired up in build.yml and
+## the Justfile) authenticates the request in CI to avoid unauthenticated
+## API rate limits; local builds fall back to anonymous access. Daily
+## image builds therefore automatically pick up every new Heroic release.
+##
+## Heroic's RPM unpacks into /opt/Heroic, but on bootc systems /opt is a
+## symlink into /var (which the deployment does not take from the image),
+## so the packaged tree could not be created during the build and would
+## also be missing on deployed systems. Making /opt a regular image-owned
+## directory instead keeps the application tree with the image; this is
+## the workaround documented in the Containerfile's "[IM]MUTABLE /opt"
+## note.
+
+rm -rf /opt && mkdir /opt
+dnf5 remove -y lutris
+
+heroic_url="$(/ctx/ghcurl https://api.github.com/repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest \
+    | jq -r '.assets[] | select((.name | endswith(".rpm")) and (.name | contains("linux-x86_64"))) | .browser_download_url')"
+echo "Fetching Heroic: ${heroic_url}"
+/ctx/ghcurl "${heroic_url}" -o /tmp/heroic.rpm
+dnf5 install -y /tmp/heroic.rpm
+rm -f /tmp/heroic.rpm
+
 ### Replace zram-generator with zswap
 ##
 ## Swap-on-zram is removed in favor of zswap: the kernel compresses swapped

@@ -26,8 +26,11 @@ environment with a tiling-compositor setup:
   editor for Wayland; Qt apps are themed with `qt6ct`.
 - KDE Plasma and GNOME desktops and their tied applications are **removed** at build time
   (see `REMOVE_PATTERNS` in [build_files/build.sh](./build_files/build.sh)). Everything else Bazzite ships is
-  untouched: Steam, Lutris, gamescope, drivers, ujust, Bazzite Portal, Waydroid, Cockpit, the audio stack, and
-  so on. **Bazaar** is removed as well — software and system management is centered on LinuxToys instead.
+  untouched: Steam, gamescope, drivers, ujust, Bazzite Portal, Waydroid, Cockpit, the audio stack, and so on.
+  **Bazaar** is removed as well — software and system management is centered on LinuxToys instead.
+- **Heroic Games Launcher instead of Lutris** — Lutris is removed; [Heroic](https://heroicgameslauncher.com)
+  is installed at build time from the `.rpm` asset of its latest GitHub release — so every (daily) image
+  build automatically picks up the newest version.
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every (daily) image build automatically picks up the newest
   version. It replaces Bazaar as the image's software and system manager.
