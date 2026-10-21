@@ -6,5 +6,7 @@ Before=display-manager.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=30s
+SyslogIdentifier=gregos-noctalia-greeter-setup
 ExecStart=/bin/bash /usr/libexec/gregos/noctalia-greeter-setup
 RemainAfterExit=yes

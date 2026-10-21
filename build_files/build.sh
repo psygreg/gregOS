@@ -2,9 +2,6 @@
 
 set -ouex pipefail
 
-# Copy the contents of system_files/ of the git repo to /
-cp -avf "/ctx/system_files"/. /
-
 ### Install packages
 
 # Packages can be installed from any enabled yum repo on the image.
@@ -53,7 +50,6 @@ dnf5 install -y --refresh \
     --setopt=terra.repo_gpgcheck=0 \
     --setopt=terra.skip_if_unavailable=false \
     --enable-repo=terra \
-    --enable-repo=terra-extras \
     noctalia-greeter nwg-look
 
 ### Install LinuxToys from its latest GitHub release
@@ -156,7 +152,9 @@ dnf5 install -y \
     gnome-keyring-pam \
     gnome-disk-utility \
     showtime \
-    kde-connect
+    kde-connect \
+    wlsunset \
+    cava
 
 # Fail the build if a future greetd package drops either existing PAM hook;
 # installing the module alone would then no longer unlock/start the keyring.
@@ -166,30 +164,42 @@ if ! grep -Eq '^-?auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so([[:s
     exit 1
 fi
 
+### Apply image-owned files after RPM transactions
+##
+## Package installs can create or replace files under /usr and /etc. Apply
+## system_files afterwards so gregOS defaults and unit overrides win.
+
+cp -avf "/ctx/system_files"/. /
+
 ### Deploy the shipped niri + Noctalia configuration
 ##
-##  - /usr/share/gregos/ is the canonical copy inside the image
-##  - /etc/skel/.config/ seeds new user accounts
-##  - gregos-niri-config-seed.service copies the same files into existing
-##    user homes on first boot, so rebasing to this image just works without
-##    manual steps. The seeder only ever adds missing files.
+##  - /etc/niri/ holds the canonical, image-managed compositor configuration
+##  - /usr/share/niri/defaults/config.kdl is the small per-user wrapper
+##  - /etc/skel and the boot seeder put the wrapper in user homes; the seeder
+##    migrates only unmodified configs from older gregOS images
+##  - Noctalia's TOML defaults are seeded only when the user has no copy
 
-mkdir -p /usr/share/gregos/niri /usr/share/gregos/noctalia
+mkdir -p /etc/niri /usr/share/gregos/niri /usr/share/gregos/noctalia
 cp -avf /ctx/dotfiles/niri/. /usr/share/gregos/niri/
+cp -avf /ctx/dotfiles/niri/. /etc/niri/
 cp -avf /ctx/dotfiles/noctalia/. /usr/share/gregos/noctalia/
 
 mkdir -p /etc/skel/.config/niri /etc/skel/.config/noctalia
-cp -avf /ctx/dotfiles/niri/. /etc/skel/.config/niri/
+cp -avf /usr/share/niri/defaults/config.kdl /etc/skel/.config/niri/config.kdl
+cp -avf /ctx/dotfiles/niri/noctalia.kdl /etc/skel/.config/niri/noctalia.kdl
 cp -avf /ctx/dotfiles/noctalia/. /etc/skel/.config/noctalia/
+
+# Validate both the system config and the per-user wrapper, including includes.
+niri validate -c /etc/niri/config.kdl
+niri validate -c /usr/share/niri/defaults/config.kdl
 
 ### Login manager: greetd + Noctalia Greeter
 ##
 ## Replaces KDE's login manager (plasma-login-manager / SDDM). The greeter
-## runs as the "greeter" system account (provided by greetd and added to the
-## video/input groups by the shipped sysusers.d rule) and offers the niri
-## session. A required setup service migrates existing accounts off greetd's
-## private /var/lib/greetd directory and initializes Noctalia's persistent
-## state before the login screen starts.
+## runs as the "greeter" system account and offers the niri session. Its
+## setup service migrates existing accounts off greetd's private
+## /var/lib/greetd directory, grants DRM/input group access, and initializes
+## Noctalia's persistent state before greetd starts.
 
 cat > /etc/greetd/config.toml <<'EOF'
 # Managed by gregOS - greetd running the Noctalia greeter

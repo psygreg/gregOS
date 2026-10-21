@@ -21,8 +21,8 @@ environment with a tiling-compositor setup:
 - **[Noctalia Greeter](https://github.com/noctalia-dev/noctalia-greeter)** + **greetd** - the login screen.
   Sourced from the [Terra](https://terrapkg.com) repository; the repo is used at build time and left disabled
   afterwards, matching how Bazzite itself consumes Terra. The greeter runs as the `greeter` system account
-  (declared via `system_files/usr/lib/sysusers.d/gregos-niri.conf`), with a separate writable home and
-  persistent state initialized before greetd starts.
+  (declared via `system_files/usr/lib/sysusers.d/gregos-niri.conf`); its setup service provides device access,
+  a separate writable home, and persistent state before greetd starts.
 - **GTK theming** - `adw-gtk3-theme` (Fedora repos) applied with `nwg-look` (Terra), the GTK look-and-feel
   editor for Wayland; Qt apps are themed with `qt6ct`.
 - KDE Plasma and GNOME desktop environments are **removed** at build time, along with most of their
@@ -47,13 +47,14 @@ environment with a tiling-compositor setup:
   self-contained agent tooling works better installed at user level, where it can be updated at any time.
   See [Installing OpenCode](#installing-opencode-optional-user-level).
 
-Configuration lives in `dotfiles/` and is deployed three ways at build time:
+Configuration lives in `dotfiles/`. The Niri files are installed under `/etc/niri/`; the package's
+`/usr/share/niri/defaults/config.kdl` becomes a small wrapper that includes the system config. The
+wrapper is copied into `/etc/skel` for new accounts and seeded into existing homes by the boot service.
+Noctalia's TOML defaults are seeded only when a user has no existing copy.
 
-1. Canonical copy inside the image at `/usr/share/gregos/`.
-2. `/etc/skel/.config/` so new user accounts get it automatically.
-3. `gregos-niri-config-seed.service` copies the files into **existing** user homes on first boot (only files
-   that are missing; existing configs are never overwritten). This makes rebasing an existing Bazzite
-   install to this image work out of the box.
+`/etc/skel/.config/` covers new accounts. `gregos-niri-config-seed.service` handles existing homes on rebase:
+it adds missing defaults and migrates the old Niri config only when both it and its Noctalia include still
+match the shipped files, leaving user edits untouched.
 
 ## Using the desktop
 

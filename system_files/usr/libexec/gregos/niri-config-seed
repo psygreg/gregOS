@@ -1,13 +1,13 @@
 #!/bin/bash
-# Seeds the image's per-user desktop configuration into existing user homes
-# that do not have it yet (for example right after rebasing a Bazzite system
-# to this image): the niri + Noctalia configuration and the Noctalia defaults.
-# Files are only ever added: anything a user already has is never touched.
-# New accounts get the same files from /etc/skel at account creation.
+# Seeds defaults into existing homes and migrates the previous gregOS Niri
+# config to the system-default wrapper only when it is byte-for-byte unchanged.
+# User-edited Niri and Noctalia files are preserved. New homes are also seeded
+# from /etc/skel.
 
 set -euo pipefail
 
 niri_src="/usr/share/gregos/niri"
+niri_default="/usr/share/niri/defaults/config.kdl"
 noctalia_src="/usr/share/gregos/noctalia"
 
 shopt -s nullglob
@@ -19,12 +19,26 @@ for home in /home/*/; do
     # Real users only; never touch root-owned leftovers like lost+found.
     [[ "${uid}" -ge 1000 ]] || continue
 
-    if [[ ! -e "${home}/.config/niri/config.kdl" ]]; then
+    niri_config="${home}/.config/niri/config.kdl"
+    if [[ ! -e "${niri_config}" && ! -L "${niri_config}" ]]; then
         [[ -d "${home}/.config" ]] || install -d -m 0700 -o "${uid}" -g "${gid}" "${home}/.config"
         [[ -d "${home}/.config/niri" ]] || install -d -m 0755 -o "${uid}" -g "${gid}" "${home}/.config/niri"
-        install -m 0644 -o "${uid}" -g "${gid}" "${niri_src}/config.kdl" "${home}/.config/niri/config.kdl"
+        install -m 0644 -o "${uid}" -g "${gid}" "${niri_default}" "${niri_config}"
+        echo "gregos-niri-config-seed: installed system-default niri wrapper for ${home}"
+    elif [[ ! -L "${niri_config}" ]] && cmp -s "${niri_config}" "${niri_src}/config.kdl" \
+        && { [[ ! -e "${home}/.config/niri/noctalia.kdl" && ! -L "${home}/.config/niri/noctalia.kdl" ]] \
+            || { [[ ! -L "${home}/.config/niri/noctalia.kdl" ]] \
+                && cmp -s "${home}/.config/niri/noctalia.kdl" "${niri_src}/noctalia.kdl"; }; }; then
+        # Earlier gregOS images copied this full config directly into each
+        # home. Replace it only if its companion include is also untouched.
+        install -m 0644 -o "${uid}" -g "${gid}" "${niri_default}" "${niri_config}"
+        echo "gregos-niri-config-seed: migrated default niri config for ${home}"
+    fi
+
+    if [[ ! -e "${home}/.config/niri/noctalia.kdl" && ! -L "${home}/.config/niri/noctalia.kdl" ]]; then
+        [[ -d "${home}/.config/niri" ]] || install -d -m 0755 -o "${uid}" -g "${gid}" "${home}/.config/niri"
         install -m 0644 -o "${uid}" -g "${gid}" "${niri_src}/noctalia.kdl" "${home}/.config/niri/noctalia.kdl"
-        echo "gregos-niri-config-seed: installed niri config for ${home}"
+        echo "gregos-niri-config-seed: installed Noctalia Niri include for ${home}"
     fi
 
     if [[ ! -e "${home}/.config/noctalia/10-gregos-defaults.toml" ]]; then

@@ -1,0 +1,3 @@
+// Keep Niri's per-user entry point small and stable. The image-managed
+// configuration lives under /etc/niri and remains the system default.
+include "/etc/niri/config.kdl"
