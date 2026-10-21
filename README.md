@@ -21,8 +21,11 @@ environment with a tiling-compositor setup:
 - **[Noctalia Greeter](https://github.com/noctalia-dev/noctalia-greeter)** + **greetd** - the login screen.
   Sourced from the [Terra](https://terrapkg.com) repository; the repo is used at build time and left disabled
   afterwards, matching how Bazzite itself consumes Terra. The greeter runs as the `greeter` system account
-  (declared via `system_files/usr/lib/sysusers.d/gregos-niri.conf`); its setup service provides device access,
-  a separate writable home, and persistent state before greetd starts.
+  (declared via `system_files/usr/lib/sysusers.d/gregos-niri.conf`, with `video`/`input`/`render` device
+  access). greetd launches it through gregOS's own `noctalia-greeter-render` wrapper, which makes the
+  greeter's bundled wlroots compositor start reliably on any GPU — see
+  [Why a render wrapper](#why-a-render-wrapper). A setup service (`gregos-noctalia-greeter-setup.service`)
+  verifies device access and initializes Noctalia's persistent state before greetd starts.
 - **GTK theming** - `adw-gtk3-theme` (Fedora repos) applied with `nwg-look` (Terra), the GTK look-and-feel
   editor for Wayland; Qt apps are themed with `qt6ct`.
 - KDE Plasma and GNOME desktop environments are **removed** at build time, along with most of their
@@ -72,6 +75,37 @@ match the shipped files, leaving user edits untouched.
 - The greeter remembers the last session and user picked; niri is the default session. Noctalia's settings
   app (`Mod+Comma`) manages the shell, and its polkit agent is pre-enabled via
   `~/.config/noctalia/10-gregos-defaults.toml`.
+
+
+# Why a render wrapper
+
+The Noctalia Greeter is not just a UI — it ships its own bundled [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots)
+compositor that draws the login screen. wlroots picks a renderer with `wlr_renderer_autocreate()`, which
+tries them in this order:
+
+1. `gles2` (EGL / DRI2)
+2. `vulkan` (needs the DRM↔Vulkan device match to succeed)
+3. `pixman` (software) — **only** used when the backend has **no render node**
+
+The catch is step 3: on real hardware there **is** a render node, so if `gles2` and `vulkan` both fail,
+wlroots returns `NULL` instead of falling back to software, the compositor prints
+`failed to create wlroots renderer` and exits, and greetd restart-loops onto a blank screen with no useful
+error. That is exactly what happened on this Bazzite base (EGL: `DRI2: failed to create screen`, then
+Vulkan: `Could not match drm and vulkan device`).
+
+A login greeter must never be able to fail to draw. So greetd does **not** run `noctalia-greeter-session`
+directly — it runs gregOS's `noctalia-greeter-render` wrapper
+(`system_files/usr/libexec/gregos/noctalia-greeter-render`), which:
+
+- first lets wlroots pick a hardware renderer (`auto` → `gles2`/`vulkan`/`pixman`);
+- if the compositor cannot get through startup (renderer creation fails immediately), retries pinned to the
+  software `pixman` renderer, which always works regardless of GPU, driver, or render-node quirks;
+- treats a compositor that survives a short grace period as healthy and simply waits for it.
+
+The desktop session you log into afterwards is unaffected — niri (via smithay) does its own renderer
+selection and uses hardware acceleration. The wrapper only guarantees that the **login screen** always
+appears. It can be tuned or pinned for debugging through environment variables documented at the top of the
+wrapper (e.g. `GREGOS_GREETER_RENDERER=gles2` to force hardware, or `GREGOS_GREETER_MAX_ATTEMPTS`).
 
 
 # Installing OpenCode (optional, user-level)

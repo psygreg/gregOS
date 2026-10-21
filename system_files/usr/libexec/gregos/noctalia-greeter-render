@@ -1,0 +1,122 @@
+#!/bin/bash
+# gregOS: greetd session wrapper for the Noctalia greeter.
+#
+# The Noctalia greeter runs its own bundled wlroots compositor. wlroots picks a
+# renderer with wlr_renderer_autocreate(), which tries them in this order:
+#
+#   1. gles2  (EGL / DRI2)      - needs a working GL/EGL stack for the GPU
+#   2. vulkan (needs the drm<->vulkan device match to succeed)
+#   3. pixman (software)        - ONLY used when the backend has no render node
+#
+# The critical detail is step 3: on real hardware there IS a render node, so if
+# gles2 and vulkan both fail, wlroots returns NULL instead of falling back to
+# software, the compositor prints "failed to create wlroots renderer" and exits,
+# and greetd restart-loops onto a blank screen with no useful error. This is
+# exactly what happened on the Bazzite image (EGL: "DRI2: failed to create
+# screen", then Vulkan: "Could not match drm and vulkan device").
+#
+# A login greeter must never be able to fail to draw. So we run the greeter in a
+# small retry loop: first let wlroots pick a hardware renderer, and if the
+# compositor cannot get through startup, retry pinned to the software (pixman)
+# renderer, which always works regardless of GPU, driver, or render-node quirks.
+# The desktop session the user logs into afterwards is unaffected - niri/smithay
+# does its own renderer selection and uses hardware.
+#
+# Each attempt runs as a child we watch for a short grace period. A renderer
+# creation failure is immediate, so a compositor still alive after the grace
+# period is healthy and we simply wait for it to finish normally (the user logs
+# in, the greeter exits, greetd reaps this wrapper). A compositor that dies
+# within the grace period is retried with the next renderer.
+#
+# Override points (all optional):
+#   GREGOS_GREETER_RENDERER      - force a single wlroots renderer (auto|gles2|
+#                                  vulkan|pixman). When set, no fallback retry is
+#                                  attempted - useful for debugging.
+#   GREGOS_GREETER_RENDERER_FB   - renderer used on the fallback attempt
+#                                  (default: pixman).
+#   GREGOS_GREETER_MAX_ATTEMPTS  - total launch attempts before giving up
+#                                  (default: 2).
+#   GREGOS_GREETER_GRACE_SECS    - seconds a greeter must survive to be treated
+#                                  as healthy (default: 3).
+#   NOCTALIA_GREETER_SESSION_BIN - path to the real noctalia-greeter-session
+#                                  (default: /usr/bin/noctalia-greeter-session).
+
+set -u
+
+session_bin="${NOCTALIA_GREETER_SESSION_BIN:-/usr/bin/noctalia-greeter-session}"
+fallback_renderer="${GREGOS_GREETER_RENDERER_FB:-pixman}"
+max_attempts="${GREGOS_GREETER_MAX_ATTEMPTS:-2}"
+grace_secs="${GREGOS_GREETER_GRACE_SECS:-3}"
+
+if [[ ! -x "${session_bin}" ]]; then
+    echo "gregos-noctalia-greeter-render: session binary not executable: ${session_bin}" >&2
+    exit 127
+fi
+
+# Validate numeric overrides to avoid surprising behaviour from bad input.
+[[ "${max_attempts}" =~ ^[0-9]+$ ]] && (( max_attempts >= 1 )) || max_attempts=2
+[[ "${grace_secs}" =~ ^[0-9]+$ ]] && (( grace_secs >= 1 )) || grace_secs=3
+
+# If the operator pinned a renderer explicitly, honour it exactly once and do
+# not apply our own fallback logic - that is a deliberate debugging choice.
+if [[ -n "${GREGOS_GREETER_RENDERER:-}" ]]; then
+    echo "gregos-noctalia-greeter-render: pinned renderer '${GREGOS_GREETER_RENDERER}' (no fallback)" >&2
+    WLR_RENDERER="${GREGOS_GREETER_RENDERER}" exec "${session_bin}" "$@"
+fi
+
+# Attempt 1 uses wlroots' own auto-selection (gles2 -> vulkan -> pixman).
+# Later attempts pin the fallback renderer so startup cannot fail on GPU quirks.
+renderers=("auto" "${fallback_renderer}")
+
+# When greetd signals us to stop (user logged in / VT switch teardown), make
+# sure we take the running greeter down with us rather than orphaning it.
+current_pid=""
+cleanup() {
+    if [[ -n "${current_pid}" ]]; then
+        kill "${current_pid}" 2>/dev/null
+    fi
+}
+trap cleanup EXIT TERM INT
+
+attempt=1
+while (( attempt <= max_attempts )); do
+    renderer="${renderers[$(( attempt - 1 ))]:-${fallback_renderer}}"
+
+    echo "gregos-noctalia-greeter-render: attempt ${attempt}/${max_attempts} with WLR_RENDERER=${renderer}" >&2
+
+    # Launch the real session wrapper (it execs into the bundled compositor via
+    # dbus-run-session) as a child so we can observe how long it survives.
+    WLR_RENDERER="${renderer}" "${session_bin}" "$@" &
+    current_pid=$!
+
+    # Grace period: a renderer-creation failure is immediate, so staying up past
+    # this point means the compositor obtained a renderer and is healthy.
+    healthy=0
+    waited=0
+    while (( waited < grace_secs * 10 )); do
+        if ! kill -0 "${current_pid}" 2>/dev/null; then
+            healthy=0
+            break
+        fi
+        healthy=1
+        sleep 0.1
+        waited=$(( waited + 1 ))
+    done
+
+    if (( healthy == 1 )); then
+        # Greeter is up and stable; wait for it and pass its exit status through.
+        wait "${current_pid}"
+        status=$?
+        current_pid=""
+        exit "${status}"
+    fi
+
+    # Compositor died during startup. Reap it and try the next renderer.
+    wait "${current_pid}" 2>/dev/null
+    current_pid=""
+    echo "gregos-noctalia-greeter-render: renderer '${renderer}' failed to start; trying next" >&2
+    attempt=$(( attempt + 1 ))
+done
+
+echo "gregos-noctalia-greeter-render: all ${max_attempts} renderer attempts failed" >&2
+exit 1

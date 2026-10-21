@@ -1,63 +1,75 @@
 #!/bin/bash
+# gregOS: prepare the Noctalia greeter's system state before greetd starts.
+#
+# This is intentionally small. Noctalia Greeter keeps all of its state under
+# /var/lib/noctalia-greeter (greeter.toml, sync.toml, wallpapers), NOT under the
+# greeter account's HOME, and its session wrapper creates its own
+# XDG_RUNTIME_DIR. So the only things this service has to guarantee are:
+#
+#   1. The greeter account can read/write its DRM + input devices, i.e. it is a
+#      member of the video/input/render groups. This is the one thing that makes
+#      hardware rendering possible for the greeter's wlroots compositor.
+#   2. Noctalia's persistent state exists, is owned by the greeter account, and
+#      has been initialized (greeter.toml / sync.toml) via the upstream helper.
+#
+# Device group membership: on Fedora Atomic the base groups live in
+# /usr/lib/group and systemd-sysusers' "m" lines are the supported way to add
+# supplementary memberships. This script asserts the membership is present and
+# repairs it if a rebase left it missing, without hand-editing /etc/group.
+
 set -euo pipefail
 
 greeter_user="greeter"
-legacy_home="/var/lib/greetd"
-greeter_home="/var/lib/gregos-greeter"
 greeter_state="/var/lib/noctalia-greeter"
+device_groups=(video input render)
 
-echo "gregos-noctalia-greeter-setup: checking HOME for '${greeter_user}'"
+echo "gregos-noctalia-greeter-setup: starting"
+
 if ! account_record="$(getent passwd "${greeter_user}")"; then
     echo "gregos-noctalia-greeter-setup: user '${greeter_user}' does not exist" >&2
     exit 1
 fi
 
-current_home="$(cut -d: -f6 <<<"${account_record}")"
-if [[ "${current_home}" == "${legacy_home}" ]]; then
-    # sysusers.d creates new accounts but does not update existing accounts on
-    # a bootc rebase.
-    echo "gregos-noctalia-greeter-setup: migrating HOME to '${greeter_home}'"
-    /usr/sbin/usermod --home "${greeter_home}" "${greeter_user}"
-elif [[ "${current_home}" != "${greeter_home}" ]]; then
-    echo "gregos-noctalia-greeter-setup: preserving custom HOME '${current_home}' for '${greeter_user}'" >&2
-fi
+# --- 1. Device group membership ---------------------------------------------
+# systemd-sysusers applies the "m" lines from gregos-niri.conf on first boot.
+# On a rebase where the account already existed, sysusers does not re-add
+# memberships, so verify and repair through usermod. usermod writes local
+# supplementary groups into /etc/group; the group *names* resolve fine through
+# NSS even when the base record lives in /usr/lib/group.
 
-# Fedora Atomic stores base groups in /usr/lib/group. usermod only edits
-# /etc/group, so materialize local records before adding the greeter.
-ensure_local_group_record() {
-    local group_name="$1"
-    local group_record group_gid temporary_group
-
-    group_record="$(getent group "${group_name}")"
-    if awk -F: -v name="${group_name}" '$1 == name { found = 1 } END { exit !found }' /etc/group; then
-        return
+missing_groups=()
+for group in "${device_groups[@]}"; do
+    if ! getent group "${group}" >/dev/null; then
+        echo "gregos-noctalia-greeter-setup: group '${group}' is not present; skipping" >&2
+        continue
     fi
-    group_gid="$(cut -d: -f3 <<<"${group_record}")"
-
-    temporary_group="$(mktemp /etc/group.XXXXXX)"
-    cat /etc/group >"${temporary_group}"
-    # Add a local override with the vendor GID; NSS merges its member list.
-    printf '%s:x:%s:\n' "${group_name}" "${group_gid}" >>"${temporary_group}"
-    chown --reference=/etc/group "${temporary_group}"
-    chmod --reference=/etc/group "${temporary_group}"
-    mv -f "${temporary_group}" /etc/group
-}
-
-for device_group in video input render; do
-    ensure_local_group_record "${device_group}"
+    if id -nG "${greeter_user}" | tr ' ' '\n' | grep -qx "${group}"; then
+        continue
+    fi
+    missing_groups+=("${group}")
 done
 
-# The local group records let usermod persist supplementary memberships on
-# Bazzite, where the vendor groups themselves live under /usr/lib/group.
-/usr/sbin/usermod --append --groups video,input,render "${greeter_user}"
-
-# Initialize Noctalia's persistent state when either config file is missing.
-# Do not rewrite an already-initialized greeter.toml on every boot.
-if [[ ! -f "${greeter_state}/greeter.toml" || ! -f "${greeter_state}/sync.toml" ]]; then
-    GREETER_USER="${greeter_user}" /usr/bin/noctalia-greeter-apply-appearance --setup-system
+if (( ${#missing_groups[@]} > 0 )); then
+    echo "gregos-noctalia-greeter-setup: adding ${greeter_user} to: ${missing_groups[*]}"
+    /usr/sbin/usermod --append --groups "$(IFS=,; echo "${missing_groups[*]}")" "${greeter_user}"
+else
+    echo "gregos-noctalia-greeter-setup: device group membership already present"
 fi
 
-# Repair ownership/mode without rewriting existing user configuration.
+# --- 2. Noctalia greeter state ----------------------------------------------
+# Create the state dir and initialize greeter.toml / sync.toml exactly once.
+# Noctalia's own helper (--setup-system) creates the directory, writes the
+# config files, and chowns everything to the greeter account. Re-running it is
+# idempotent but rewrites greeter.toml, so only invoke it when state is missing.
+
+if [[ ! -f "${greeter_state}/greeter.toml" || ! -f "${greeter_state}/sync.toml" ]]; then
+    echo "gregos-noctalia-greeter-setup: initializing Noctalia greeter state"
+    GREETER_USER="${greeter_user}" /usr/bin/noctalia-greeter-apply-appearance --setup-system
+else
+    echo "gregos-noctalia-greeter-setup: Noctalia greeter state already present"
+fi
+
+# Repair ownership/mode on existing state without rewriting user configuration.
 for config in "${greeter_state}/greeter.toml" "${greeter_state}/sync.toml"; do
     if [[ -f "${config}" ]]; then
         chown "${greeter_user}:${greeter_user}" "${config}"

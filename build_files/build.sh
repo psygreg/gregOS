@@ -197,9 +197,17 @@ niri validate -c /usr/share/niri/defaults/config.kdl
 ##
 ## Replaces KDE's login manager (plasma-login-manager / SDDM). The greeter
 ## runs as the "greeter" system account and offers the niri session. Its
-## setup service migrates existing accounts off greetd's private
-## /var/lib/greetd directory, grants DRM/input group access, and initializes
-## Noctalia's persistent state before greetd starts.
+## setup service (gregos-noctalia-greeter-setup.service, pulled in by the
+## greetd.service drop-in) grants the greeter DRM/input group access and
+## initializes Noctalia's persistent state before greetd starts.
+##
+## The greeter command is gregOS's own wrapper, /usr/libexec/gregos/noctalia-greeter-render,
+## NOT noctalia-greeter-session directly. The Noctalia greeter runs its own
+## bundled wlroots compositor, and wlroots only falls back to the software
+## (pixman) renderer when there is NO render node - on real hardware a renderer
+## failure is fatal and blank-screens the login. The wrapper tries the hardware
+## renderers first and retries pinned to pixman so the greeter always comes up.
+## See the wrapper's header comment for details and override variables.
 
 cat > /etc/greetd/config.toml <<'EOF'
 # Managed by gregOS - greetd running the Noctalia greeter
@@ -207,7 +215,7 @@ cat > /etc/greetd/config.toml <<'EOF'
 vt = 1
 
 [default_session]
-command = "/usr/bin/noctalia-greeter-session"
+command = "/usr/libexec/gregos/noctalia-greeter-render"
 user = "greeter"
 EOF
 
