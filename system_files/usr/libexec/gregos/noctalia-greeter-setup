@@ -1,0 +1,35 @@
+#!/bin/bash
+set -euo pipefail
+
+greeter_user="greeter"
+legacy_home="/var/lib/greetd"
+greeter_home="/var/lib/gregos-greeter"
+greeter_state="/var/lib/noctalia-greeter"
+
+if ! account_record="$(getent passwd "${greeter_user}")"; then
+    echo "gregos-noctalia-greeter-setup: user '${greeter_user}' does not exist" >&2
+    exit 1
+fi
+
+current_home="$(cut -d: -f6 <<<"${account_record}")"
+if [[ "${current_home}" == "${legacy_home}" ]]; then
+    # sysusers.d creates new accounts but does not update existing accounts on
+    # a bootc rebase.
+    /usr/sbin/usermod --home "${greeter_home}" "${greeter_user}"
+elif [[ "${current_home}" != "${greeter_home}" ]]; then
+    echo "gregos-noctalia-greeter-setup: preserving custom HOME '${current_home}' for '${greeter_user}'" >&2
+fi
+
+# Initialize Noctalia's persistent state when either config file is missing.
+# Do not rewrite an already-initialized greeter.toml on every boot.
+if [[ ! -f "${greeter_state}/greeter.toml" || ! -f "${greeter_state}/sync.toml" ]]; then
+    GREETER_USER="${greeter_user}" /usr/bin/noctalia-greeter-apply-appearance --setup-system
+fi
+
+# Repair ownership/mode without rewriting existing user configuration.
+for config in "${greeter_state}/greeter.toml" "${greeter_state}/sync.toml"; do
+    if [[ -f "${config}" ]]; then
+        chown "${greeter_user}:${greeter_user}" "${config}"
+        chmod 0644 "${config}"
+    fi
+done

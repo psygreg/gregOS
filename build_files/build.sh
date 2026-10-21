@@ -187,7 +187,9 @@ cp -avf /ctx/dotfiles/noctalia/. /etc/skel/.config/noctalia/
 ## Replaces KDE's login manager (plasma-login-manager / SDDM). The greeter
 ## runs as the "greeter" system account (provided by greetd and added to the
 ## video/input groups by the shipped sysusers.d rule) and offers the niri
-## session.
+## session. A required setup service migrates existing accounts off greetd's
+## private /var/lib/greetd directory and initializes Noctalia's persistent
+## state before the login screen starts.
 
 cat > /etc/greetd/config.toml <<'EOF'
 # Managed by gregOS - greetd running the Noctalia greeter

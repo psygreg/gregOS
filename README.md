@@ -21,7 +21,8 @@ environment with a tiling-compositor setup:
 - **[Noctalia Greeter](https://github.com/noctalia-dev/noctalia-greeter)** + **greetd** - the login screen.
   Sourced from the [Terra](https://terrapkg.com) repository; the repo is used at build time and left disabled
   afterwards, matching how Bazzite itself consumes Terra. The greeter runs as the `greeter` system account
-  (declared via `system_files/usr/lib/sysusers.d/gregos-niri.conf`).
+  (declared via `system_files/usr/lib/sysusers.d/gregos-niri.conf`), with a separate writable home and
+  persistent state initialized before greetd starts.
 - **GTK theming** - `adw-gtk3-theme` (Fedora repos) applied with `nwg-look` (Terra), the GTK look-and-feel
   editor for Wayland; Qt apps are themed with `qt6ct`.
 - KDE Plasma and GNOME desktop environments are **removed** at build time, along with most of their

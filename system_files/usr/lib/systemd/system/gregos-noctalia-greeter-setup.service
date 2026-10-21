@@ -1,0 +1,10 @@
+[Unit]
+Description=Prepare Noctalia Greeter account and state
+Documentation=https://docs.noctalia.dev/greeter/installation/#initialize-greeter-state
+After=local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /usr/libexec/gregos/noctalia-greeter-setup
+RemainAfterExit=yes
