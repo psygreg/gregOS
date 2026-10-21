@@ -130,6 +130,32 @@ fi
 # owned by any RPM); remove it along with the app.
 rm -rfv /usr/share/ublue-os/bazaar
 
+### Install selected cross-desktop applications
+##
+## These applications are useful in the niri + Noctalia session without
+## installing either full desktop environment. Install them after the desktop
+## package cleanup above: its broad KDE prefix also matches kde-connect.
+##
+## Fedora's greetd PAM file already contains optional gnome-keyring auth and
+## session hooks; the leading '-' only silences errors if a module is missing.
+## gnome-keyring-pam supplies the module that makes those hooks work.
+
+dnf5 install -y \
+    nautilus \
+    gnome-keyring \
+    gnome-keyring-pam \
+    gnome-disk-utility \
+    showtime \
+    kde-connect
+
+# Fail the build if a future greetd package drops either existing PAM hook;
+# installing the module alone would then no longer unlock/start the keyring.
+if ! grep -Eq '^-?auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so([[:space:]]|$)' /etc/pam.d/greetd \
+    || ! grep -Eq '^-?session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so[[:space:]]+auto_start([[:space:]]|$)' /etc/pam.d/greetd; then
+    echo "Fedora greetd PAM configuration is missing the GNOME Keyring hooks" >&2
+    exit 1
+fi
+
 ### Deploy the shipped niri + Noctalia configuration
 ##
 ##  - /usr/share/gregos/ is the canonical copy inside the image
