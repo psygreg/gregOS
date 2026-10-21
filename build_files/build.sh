@@ -164,6 +164,57 @@ if ! grep -Eq '^-?auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so([[:s
     exit 1
 fi
 
+### Console keymap for the LUKS unlock prompt
+##
+## The disk-encryption prompt runs inside the initramfs, so the keymap has to
+## be available THERE - the deployed system's /etc/vconsole.conf is far too
+## late. This was the cause of an unbootable image: the initramfs shipped
+## loadkeys, every keymap and systemd-vconsole-setup, but nothing told it WHICH
+## keymap to load, so keystrokes at the passphrase prompt did not map to the
+## expected characters and the unlock could never succeed.
+##
+## dracut's i18n module reads /etc/vconsole.conf at image-build time and, when
+## the initramfs uses systemd, embeds KEYMAP/FONT into the image. A missing
+## /etc/vconsole.conf silently leaves KEYMAP unset, which is exactly what
+## happened. So:
+##
+##   1. write /etc/vconsole.conf with the wanted layout (below), and
+##   2. regenerate the initramfs at the end of this script, and
+##   3. also pass rd.vconsole.keymap on the kernel command line via bootc's
+##      kargs.d, which dracut's parse-i18n.sh honours inside the initramfs.
+##      Command line wins over the baked-in value, so an operator can still
+##      override the layout at boot without rebuilding anything.
+##
+## Change GREGOS_CONSOLE_KEYMAP below to match the physical keyboard used to
+## type the disk-encryption passphrase. Inspect installed layouts with:
+##   ls /usr/lib/kbd/keymaps/legacy/i386/qwerty/  (e.g. br-abnt2, us, pt-latin1)
+
+GREGOS_CONSOLE_KEYMAP="us-acentos"
+GREGOS_CONSOLE_FONT="latarcyrheb-sun16"
+
+mkdir -p /etc
+cat > /etc/vconsole.conf <<EOF
+# Managed by gregOS - console keymap used at boot, including the LUKS unlock
+# prompt. Keep in sync with GREGOS_CONSOLE_KEYMAP in build_files/build.sh.
+KEYMAP=${GREGOS_CONSOLE_KEYMAP}
+FONT=${GREGOS_CONSOLE_FONT}
+EOF
+
+mkdir -p /usr/lib/bootc/kargs.d
+cat > /usr/lib/bootc/kargs.d/10-gregos-vconsole.toml <<EOF
+# gregOS: console keymap for early boot (the LUKS passphrase prompt runs in the
+# initramfs). dracut's parse-i18n.sh turns rd.vconsole.keymap into /etc/vconsole.conf
+# inside the initramfs so systemd-vconsole-setup can load it before the prompt.
+# This is applied by bootc when it creates this image's deployment and overrides
+# the keymap baked into the initramfs, so the layout can also be changed at the
+# boot loader without rebuilding. Keep in sync with GREGOS_CONSOLE_KEYMAP in
+# build_files/build.sh.
+kargs = [
+  "rd.vconsole.keymap=${GREGOS_CONSOLE_KEYMAP}",
+  "rd.vconsole.font=${GREGOS_CONSOLE_FONT}",
+]
+EOF
+
 ### Apply image-owned files after RPM transactions
 ##
 ## Package installs can create or replace files under /usr and /etc. Apply
@@ -231,3 +282,43 @@ systemctl enable gregos-zswap-setup.service
 #### Example for enabling a System Unit File
 
 systemctl enable podman.socket
+
+### Rebuild the initramfs so the console keymap is baked in
+##
+## This MUST be the last step: the initramfs is generated from the final package
+## set and final /etc, so anything that adds or removes drivers, dracut modules
+## or config has to run first. Without this rebuild the /etc/vconsole.conf
+## written above is never seen by dracut, and the shipped initramfs would keep
+## having no keymap - which makes the LUKS passphrase prompt untypeable.
+##
+## The flags below are exactly the ones the base Bazzite image used to build the
+## initramfs we are replacing (recorded in the previous image's dracut
+## "Arguments:" line):
+##   --no-hostonly --kver <kver> --reproducible --zstd --add ostree --add fido2 -f
+## Keeping them identical keeps the resulting module set identical (verified:
+## same dracut module list, still includes i18n, crypt, systemd-cryptsetup,
+## plymouth and drm) - only the console keymap/font configuration is added.
+
+mapfile -t gregos_kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+if (( ${#gregos_kernels[@]} != 1 )); then
+    echo "expected exactly one kernel under /usr/lib/modules, found: ${gregos_kernels[*]:-none}" >&2
+    exit 1
+fi
+gregos_kver="${gregos_kernels[0]}"
+echo "Rebuilding initramfs for kernel ${gregos_kver} with keymap ${GREGOS_CONSOLE_KEYMAP}"
+
+dracut --no-hostonly \
+    --kver "${gregos_kver}" \
+    --reproducible \
+    --zstd \
+    --add ostree \
+    --add fido2 \
+    -f "/usr/lib/modules/${gregos_kver}/initramfs.img"
+
+# Fail the build if the keymap did not actually make it into the initramfs:
+# that is the exact regression that made the encrypted disk unbootable.
+if ! lsinitrd "/usr/lib/modules/${gregos_kver}/initramfs.img" etc/vconsole.conf | grep -q "KEYMAP=${GREGOS_CONSOLE_KEYMAP}"; then
+    echo "console keymap '${GREGOS_CONSOLE_KEYMAP}' is missing from the rebuilt initramfs" >&2
+    exit 1
+fi
+echo "Initramfs rebuilt with console keymap ${GREGOS_CONSOLE_KEYMAP}"

@@ -108,6 +108,59 @@ appears. It can be tuned or pinned for debugging through environment variables d
 wrapper (e.g. `GREGOS_GREETER_RENDERER=gles2` to force hardware, or `GREGOS_GREETER_MAX_ATTEMPTS`).
 
 
+# Console keymap and the disk-encryption prompt
+
+The LUKS passphrase prompt runs **inside the initramfs**, long before the installed system's files are
+available. So the console keymap has to be present *there*, or keystrokes at the prompt do not map to the
+characters you expect and the passphrase can never be entered correctly — the machine looks like "the
+keyboard is broken at the encryption prompt" and is effectively unbootable.
+
+The initramfs ships everything needed to *load* a keymap (`loadkeys`, all `kbd` keymaps,
+`systemd-vconsole-setup`), but **nothing tells it which keymap to load** unless `KEYMAP` is set. dracut's
+`i18n` module reads `/etc/vconsole.conf` at image-build time and embeds it into the initramfs; when that
+file is absent it silently leaves `KEYMAP` unset. That is exactly what this image originally shipped, which
+is why the encryption prompt was untypeable.
+
+gregos fixes this three ways, all driven by a single variable in
+[build_files/build.sh](./build_files/build.sh):
+
+```bash
+GREGOS_CONSOLE_KEYMAP="br-abnt2"          # <- set this to your keyboard layout
+GREGOS_CONSOLE_FONT="latarcyrheb-sun16"
+```
+
+1. **`/etc/vconsole.conf`** is written with the chosen `KEYMAP`/`FONT`, so the running system's console
+   matches too.
+2. **The initramfs is regenerated** at the very end of the build using the *same* dracut flags the Bazzite
+   base used (`--no-hostonly --kver … --reproducible --zstd --add ostree --add fido2 -f`), so the keymap is
+   baked in. The resulting dracut module set is unchanged (verified identical — `i18n`, `crypt`,
+   `systemd-cryptsetup`, `plymouth`, `drm` all still present); only the keymap configuration is added. The
+   build **fails** if the keymap did not actually land in the initramfs, so this regression cannot silently
+   return.
+3. **`rd.vconsole.keymap` / `rd.vconsole.font`** are added through bootc's
+   `/usr/lib/bootc/kargs.d/10-gregos-vconsole.toml`. dracut's `parse-i18n.sh` turns these into
+   `/etc/vconsole.conf` *inside the initramfs*. Because the command line wins over the baked-in value, you
+   can change the layout at the boot loader without rebuilding anything.
+
+### Changing the keyboard layout
+
+Pick the layout that matches the physical keyboard you type the passphrase on. List the installed layouts
+with `ls /usr/lib/kbd/keymaps/legacy/i386/qwerty/` (common ones: `br-abnt2`, `br-abnt`, `br-latin1-abnt2`,
+`us`, `pt-latin1`, `uk`, `de-latin1`). Change `GREGOS_CONSOLE_KEYMAP` in `build_files/build.sh`, rebuild.
+
+### Recovering a machine stuck at the passphrase prompt
+
+If you are already stuck, you do not need to rebuild anything. At the GRUB menu press **`e`**, append the
+following to the `linux` line, then press **Ctrl+X** to boot:
+
+```
+rd.vconsole.keymap=br-abnt2
+```
+
+Substitute your own layout. This is read by the initramfs immediately and makes the prompt typeable for that
+boot; then rebuild and rebase to make it permanent.
+
+
 # Installing OpenCode (optional, user-level)
 
 OpenCode (and its bun runtime) are not part of the image by design: on this atomic system only image updates
