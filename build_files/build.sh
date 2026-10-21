@@ -39,12 +39,22 @@ dnf5 install -y \
 
 ### Install noctalia-greeter and nwg-look from the Terra repository
 ##
-## Neither is in Fedora's own repos yet. Bazzite already carries
-## terra-release with the Terra repos disabled, so enable them just for this
-## transaction (--enable-repo does not change the repo files on disk) and
-## leave everything as shipped afterwards.
+## Neither is in Fedora's own repos yet. Bazzite carries Terra but disables
+## it. These packages are both in Terra's main repo, so enable only that repo
+## for this transaction (--enable-repo does not change repo files on disk).
+##
+## Bazzite's DNF config sets skip_if_unavailable=1, and DNF5 5.4.6 can then
+## silently skip Terra when it cannot load the repomd signing key. Disable only
+## Terra's repomd check for this transaction; RPM signature checking remains
+## enabled. Make Terra failures fatal instead of reporting misleading "no
+## match" errors.
 
-dnf5 install -y --enable-repo=terra --enable-repo=terra-extras noctalia-greeter nwg-look
+dnf5 install -y --refresh \
+    --setopt=terra.repo_gpgcheck=0 \
+    --setopt=terra.skip_if_unavailable=false \
+    --enable-repo=terra \
+    --enable-repo=terra-extras \
+    noctalia-greeter nwg-look
 
 ### Install LinuxToys from its latest GitHub release
 ##
