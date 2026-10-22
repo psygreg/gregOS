@@ -193,7 +193,8 @@ dnf5 install -y \
     gnome-calculator \
     gnome-text-editor \
     ffmpegthumbnailer \
-    glycin-image-rs \
+    glycin-thumbnailer \
+    glycin-loaders \
     loupe \
     blackbox-terminal \
     showtime \
