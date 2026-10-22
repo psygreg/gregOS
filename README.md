@@ -35,7 +35,8 @@ environment with a tiling-compositor setup:
   centered on LinuxToys instead.
 - **Selected cross-desktop apps** — Nautilus (`nautilus`), GNOME Keyring (`gnome-keyring` with its
   `gnome-keyring-pam` greetd integration), GNOME Disks (`gnome-disk-utility`), Showtime (`showtime`), and
-  KDE Connect (`kde-connect`).
+  KDE Connect (`kde-connect`). Nautilus thumbnails images via the `glycin-loaders` thumbnailers shipped by
+  the base image (kept through the desktop cleanup) and videos via `ffmpegthumbnailer`.
 - **Heroic Games Launcher instead of Lutris** — Lutris is removed; [Heroic](https://heroicgameslauncher.com)
   is installed at build time from the `.rpm` asset of its latest GitHub release — so every (daily) image
   build automatically picks up the newest version.
@@ -75,6 +76,12 @@ match the shipped files, leaving user edits untouched.
 - The greeter remembers the last session and user picked; niri is the default session. Noctalia's settings
   app (`Mod+Comma`) manages the shell, and its polkit agent is pre-enabled via
   `~/.config/noctalia/10-gregos-defaults.toml`.
+- **Dead keys (compose/accented characters) work in GTK4 apps.** GTK 4.20+ (GNOME 49+) no longer handles
+  dead-key and X11-style compose sequences itself on Wayland — it delegates that to an input-method
+  framework, and without one running, layouts like `us-intl` type accents that never appear (most visible in
+  terminals like BlackBox/ptyxis). The niri session sets `GTK_IM_MODULE=simple` so GTK falls back to its own
+  compose/dead-key handling. If you later run a real input method (IBus or Fcitx5), remove that line in
+  `dotfiles/niri/config.kdl` and use the framework's own module instead.
 
 
 # Why a render wrapper

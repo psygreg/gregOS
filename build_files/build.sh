@@ -125,7 +125,10 @@ rm -f /etc/systemd/zram-generator.conf
 
 REMOVE_PATTERNS='^(bazaar|xwaylandvideobridge|plasma-|kwin|kde|kf5-|kf6-|kio|kded|kinit|konsole|dolphin|kate|kwrite|ark|gwenview|okular|spectacle|kcalc|kfind|kdialog|kmenuedit|kinfocenter|ksystemlog|ksystemstats|kcharselect|kcolorchooser|skanpage|svgpart|kamera|print-manager|drkonqi|milou|kactivity|kwayland|kpipewire|kdecoration|breeze|oxygen|sddm|polkit-kde|xdg-desktop-portal-kde|layer-shell-qt|qqc2|libplasma|libkworkspace|libkdcraw|libkexiv2|libksane|kimageformat|khelpcenter|kfilemetadata|baloo|ksshaskpass|kwallet|krunner|kscreen|khotkeys|kuserfeedback|gnome-shell|gnome-session|gnome-settings-daemon|gnome-control-center|gnome-tour|gnome-initial-setup|gnome-software|gnome-classic-session|gnome-text-editor|gnome-calculator|gnome-font-viewer|gnome-logs|gnome-weather|gnome-maps|gnome-characters|gnome-clocks|gnome-contacts|gnome-connections|gnome-photos|gnome-screenshot|gnome-system-monitor)'
 
-desktop_pkgs="$(rpm -qa --qf '%{NAME}\n' | grep -E "${REMOVE_PATTERNS}" | sort -u || true)"
+# Nautilus thumbnailing depends on this: see "Keep image thumbnailers" below.
+KEEP_THUMBNAILERS='^(glycin-loaders|glycin-thumbnailer|ffmpegthumbnailer)$'
+
+desktop_pkgs="$(rpm -qa --qf '%{NAME}\n' | grep -E "${REMOVE_PATTERNS}" | grep -Ev "${KEEP_THUMBNAILERS}" | sort -u || true)"
 if [[ -n "${desktop_pkgs}" ]]; then
     echo "Removing desktop environment packages:"
     printf '%s\n' "${desktop_pkgs}"
@@ -151,10 +154,36 @@ dnf5 install -y \
     gnome-keyring \
     gnome-keyring-pam \
     gnome-disk-utility \
+    gnome-calculator \
+    gnome-text-editor \
+    ffmpegthumbnailer \
+    glycin-image-rs \
+    loupe \
+    blackbox-terminal \
     showtime \
     kde-connect \
     wlsunset \
     cava
+
+### Keep image thumbnailers
+##
+## Nautilus thumbnails images and videos through the thumbnailer entries in
+## /usr/share/thumbnailers. Images are covered by the glycin-* entries owned
+## by glycin-loaders (JPEG/PNG/GIF/WebP/TIFF/BMP/SVG/... via glycin-image-rs,
+## plus AVIF/HEIF, JXL), videos by ffmpegthumbnailer. Both ship with the base
+## image already - ffmpegthumbnailer is listed with the apps below to pin it,
+## and KEEP_THUMBNAILERS keeps any of them out of the desktop cleanup. So
+## images need nothing extra on top of that.
+##
+## Fail the build if a base image ever stops shipping an image thumbnailer, so
+## the regression is caught at build time instead of showing up as icons-only
+## in the file manager.
+
+if [[ ! -e /usr/share/thumbnailers/glycin-image-rs.thumbnailer ]] \
+    || [[ ! -e /usr/bin/glycin-thumbnailer ]]; then
+    echo "no image thumbnailer is installed (glycin-loaders missing)" >&2
+    exit 1
+fi
 
 # Fail the build if a future greetd package drops either existing PAM hook;
 # installing the module alone would then no longer unlock/start the keyring.
