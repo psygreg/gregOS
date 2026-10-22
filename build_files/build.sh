@@ -139,6 +139,42 @@ fi
 # owned by any RPM); remove it along with the app.
 rm -rfv /usr/share/ublue-os/bazaar
 
+### Remove Bold Brew (bbrew)
+##
+## Bazzite ships Bold Brew, a TUI front-end for managing Homebrew (and Flatpak)
+## packages, as a convenience around `brew`. It is dead weight on this image:
+## LinuxToys already covers package/software management and much more. Bold Brew
+## is NOT an RPM - it arrives as image-owned files (a launcher .desktop entry, an
+## icon, and a helper script that auto-installs the formula on first launch) plus
+## a Homebrew formula. So:
+##
+##   1. remove the desktop integration files Bazzite ships for it,
+##   2. strip any `ujust` recipe/references that surface it.
+##
+## Homebrew itself (and any formulae the user installed) is left untouched - only
+## the Bold Brew wrapper/launcher is removed. `brew install bbrew` still works if
+## it is ever wanted back.
+
+for bbrew_file in \
+    /usr/share/applications/bbrew.desktop \
+    /usr/bin/bbrew-helper \
+    /usr/share/ublue-os/bbrew.png \
+    /usr/share/pixmaps/bbrew.png; do
+    [[ -e "${bbrew_file}" ]] && rm -fv "${bbrew_file}"
+done
+
+# Surface removal: strip `bbrew` lines from Bazzite's ujust recipe files so the
+# tool is not offered back through `ujust bbrew`. These are image-owned plain
+# text files, so edit them in place where they mention bbrew.
+shopt -s nullglob
+for just_file in /usr/share/ublue-os/just/*.just; do
+    if grep -q 'bbrew' "${just_file}"; then
+        echo "Removing bbrew references from ${just_file}"
+        sed -i '/bbrew/d' "${just_file}"
+    fi
+done
+shopt -u nullglob
+
 ### Install selected cross-desktop applications
 ##
 ## These applications are useful in the niri + Noctalia session without

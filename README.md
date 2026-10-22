@@ -32,7 +32,8 @@ environment with a tiling-compositor setup:
   desktop-specific applications (see `REMOVE_PATTERNS` in [build_files/build.sh](./build_files/build.sh)).
   Everything else Bazzite ships is untouched: Steam, gamescope, drivers, ujust, Bazzite Portal, Waydroid,
   Cockpit, the audio stack, and so on. **Bazaar** is removed as well — software and system management is
-  centered on LinuxToys instead.
+  centered on LinuxToys instead. **Bold Brew** (Bazzite's Homebrew TUI, `bbrew`) is removed for the same
+  reason: LinuxToys already covers package management.
 - **Selected cross-desktop apps** — Nautilus (`nautilus`), GNOME Keyring (`gnome-keyring` with its
   `gnome-keyring-pam` greetd integration), GNOME Disks (`gnome-disk-utility`), Showtime (`showtime`), and
   KDE Connect (`kde-connect`). Nautilus thumbnails images via the `glycin-loaders` thumbnailers shipped by
