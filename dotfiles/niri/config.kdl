@@ -91,6 +91,15 @@ environment {
   // name instead, or leave it unset to use the text-input protocol.
   GTK_IM_MODULE "simple"
 
+  // Same dead-key / compose-key fix for Qt apps. Qt ships a dedicated
+  // "compose" input-method module (QComposeInputContext) that handles dead
+  // keys and X11-style compose sequences. On Wayland, Qt otherwise uses its
+  // text-input context, which does no composing, so accents never appear in
+  // Qt apps either. Pointing QT_IM_MODULE at "compose" restores it. If you
+  // later run a real input method (IBus or Fcitx5), remove this line and use
+  // the framework's own module instead (e.g. QT_IM_MODULE "ibus").
+  QT_IM_MODULE "compose"
+
   QT_QPA_PLATFORMTHEME "qt6ct"
   XCURSOR_THEME "Adwaita"
   XCURSOR_SIZE "26"
