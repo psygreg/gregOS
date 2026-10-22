@@ -32,7 +32,8 @@ dnf5 install -y \
     adwaita-cursor-theme \
     adwaita-icon-theme \
     xdg-desktop-portal-gnome \
-    xdg-desktop-portal-gtk
+    xdg-desktop-portal-gtk \
+    google-noto-sans-cjk-vf-fonts
 
 ### Install noctalia-greeter and nwg-look from the Terra repository
 ##
