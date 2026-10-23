@@ -1,0 +1,16 @@
+# Managed by gregOS - system-wide Flatpak override.
+#
+# Flatpak apps do not inherit the niri session environment. These variables
+# route them through fcitx5 (started by the session, see dotfiles/niri/
+# config.kdl) so dead keys / compose sequences / full IME input work in
+# Flatpaks exactly as in native apps.
+#
+# Safety: these only select which input-context module the toolkits load.
+# App runtimes that ship the fcitx module (the freedesktop runtime does) get
+# composing through fcitx5; runtimes that do not simply log a warning and
+# fall back to their default input handling. Plain Latin and dead-key input
+# keeps working either way.
+[Environment]
+GTK_IM_MODULE=fcitx
+QT_IM_MODULE=fcitx
+XMODIFIERS=@im=fcitx

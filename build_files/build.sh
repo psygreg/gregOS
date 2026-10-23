@@ -195,14 +195,31 @@ shopt -u nullglob
 ##   fcitx5-qt           input-context modules for Qt5/Qt6
 ##   fcitx5-configtool   config GUI (fcitx5-config-qt) + KCM page
 ##
+## Engine packages are pre-installed so a shipped image covers the locales
+## that need real IME input out of the box. They are inactive by default:
+## fcitx5's default profile only has "keyboard"-type engines, so plain
+## us-intl/other layouts keep composing dead keys by default and the
+## engine only becomes active when the user selects it in fcitx5-config-qt.
+##
+##   fcitx5-mozc [...] Japanese (Mozc engine; GoogleNotoSansCJK is already
+##                                       installed for its glyph needs)
+##   fcitx5-chinese-addons [...] Simplified/Traditional Chinese
+##                                       (Pinyin, Bopomofo, Cangjie, Wu)
+##   fcitx5-hangul, fcitx5-libthai, fcitx5-m17n, fcitx5-table-extra [...]
+##
 ## The niri session starts fcitx5 (spawn-at-startup) and exports
 ## GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=fcitx (dotfiles/niri/config.kdl), so
 ## GTK and Qt apps compose dead keys and accents through fcitx5. Layout and
 ## engine settings are user-configurable with the fcitx5-config-qt GUI.
-## Flatpak apps do not inherit session environment: users should run
-##   flatpak override --user --env=GTK_IM_MODULE=fcitx --env=QT_IM_MODULE=fcitx \
-##     --env=XMODIFIERS=@im=fcitx
-## for Flatpaks that need it.
+##
+## Flatpak apps do not inherit session environment. system_files carries
+## /etc/flatpak/overrides/global (the system-wide override Flatpak merges for
+## every installed app) so Flatpaks get the same IM environment without any
+## user action. Setting these env vars only switches which input-context
+## module the toolkits load: with an fcitx5 module installed (present in the
+## freedesktop runtimes) apps talk to fcitx5, and for apps whose module is
+## missing GTK/Qt just log a warning and fall back to their default — the
+## env override never breaks plain (Latin, dead-key) input.
 ##
 ## NOTE: this must stay AFTER the desktop-environment cleanup below. It is
 ## placed inside the cross-desktop applications transaction on purpose:
@@ -239,7 +256,14 @@ dnf5 install -y \
     fcitx5 \
     fcitx5-gtk \
     fcitx5-qt \
-    fcitx5-configtool
+    fcitx5-configtool \
+    fcitx5-mozc \
+    fcitx5-chinese-addons \
+    fcitx5-anthy \
+    fcitx5-hangul \
+    fcitx5-libthai \
+    fcitx5-m17n \
+    fcitx5-table-extra
 
 ### Keep image thumbnailers
 ##

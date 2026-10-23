@@ -96,10 +96,20 @@ match the shipped files, leaving user edits untouched.
   `fcitx5-qt`, `fcitx5-configtool`) and the niri session starts it and exports
   `GTK_IM_MODULE=fcitx`, `QT_IM_MODULE=fcitx`, `XMODIFIERS=@im=fcitx`, so every toolkit composes through
   fcitx5. Keyboard layout / input-method engines are configured with `fcitx5-config-qt`.
-  Flatpak apps do not inherit session environment; run
-  `flatpak override --user --env=GTK_IM_MODULE=fcitx --env=QT_IM_MODULE=fcitx --env=XMODIFIERS=@im=fcitx` to
-  cover them. On real input-method needs (e.g. CJK engines like `fcitx5-mozc`, `fcitx5-chinese-addons`) the
-  infrastructure is already in place — just install the engine and select it in fcitx5-config-qt.
+- **Full input-method (IME) input is ready out of the box.** The engine set for the locales that need real
+  IME is pre-installed — Japanese (`fcitx5-mozc`, with `fcitx5-anthy` as a lighter fallback),
+  Simplified/Traditional Chinese (`fcitx5-chinese-addons`), Korean (`fcitx5-hangul`), Thai
+  (`fcitx5-libthai`), plus the generic `fcitx5-m17n` and `fcitx5-table-extra` wrappers (Vietnamese, Indic,
+  Cantonese, …). They are inactive by default: fcitx5's default profile contains only keyboard engines, so
+  plain Latin/dead-key input keeps working for everyone until the user adds an IME — open
+  `fcitx5-config-qt`, add the wanted engine (e.g. "Mozc" or "Pinyin"), and switch engines with the default
+  toggle (usually `Ctrl+Space`).
+  Flatpak support is automatic: the image ships a system-wide override (`/etc/flatpak/overrides/global`)
+  that injects the same IM environment into every Flatpak. It only selects which input-context module the
+  toolkits load — runtimes that ship the fcitx module (the freedesktop runtime does) compose through fcitx5,
+  others log a warning and keep their default input handling, so plain Latin/dead-key input is never broken.
+  One known gap: Chromium/Electron apps need `--enable-wayland-ime` on their command line (e.g. via
+  `~/.config/chromium-flags.conf` or the app's own flags file) to take part in the Wayland input-method path.
   Note that existing homes with a user-modified niri `config.kdl` keep that file, so those users need to
   apply the same `environment` and `spawn-at-startup` changes by hand.
 
