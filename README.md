@@ -1,20 +1,27 @@
-# image-template
+# gregOS
 
-This repository is meant to be a template for building your own custom [bootc](https://github.com/bootc-dev/bootc) image. This template is the recommended way to make customizations to any image published by the Universal Blue Project.
+**psygreg**'s custom built Bazzite-based system. Niri with Noctalia setup, including `noctalia-greeter`, and rechunked, so it's lightweight and clean, without other desktop leftovers. Comes with all applicable optimization patches from *[LinuxToys](https://linux.toys)* on top of Bazzite's out-of-the-box, and replaces *Bazaar* and *Bold Brew* with ***LinuxToys*** for app and package management. 
 
-# Community
+## Usage
 
-If you have questions about this template after following the instructions, try the following spaces:
-- [Universal Blue Forums](https://universal-blue.discourse.group/)
-- [Universal Blue Discord](https://discord.gg/WEu6BdFEtp)
-- [bootc discussion forums](https://github.com/bootc-dev/bootc/discussions) - This is not an Universal Blue managed space, but is an excellent resource if you run into issues with building bootc images.
+To install it, from a running *Bazzite* system:
+```bash
+sudo bootc switch ghcr.io/psygreg/gregos:latest
+```
+Then, after a reboot, switch to the signed version of the image:
+```bash
+sudo bootc switch --enforce-container-sigpolicy ghcr.io/psygreg/gregos:latest
+```
+
+Then run the post-install script by simply launching *LinuxToys* and following any prompts that show up from it. It will perform all necessary final touch-ups at first launch.
 
 # What this image ships
 
 This image is based on `ghcr.io/ublue-os/bazzite:stable` (Fedora 44) and replaces the traditional desktop
 environment with a tiling-compositor setup:
 
-- **[niri](https://github.com/YaLTeu/niri)** - scrollable-tiling Wayland compositor (Fedora package).
+- **[niri](https://github.com/YaLTeu/niri)** - scrollable-tiling Wayland compositor (Fedora package) and all 
+  fixes and tweaks needed for it to work as you would expect.
 - **[Noctalia](https://github.com/noctalia-dev/noctalia)** - the desktop shell layered on top of niri: bar,
   launcher, control center, notifications, lock screen, wallpaper, OSDs, clipboard, tray, and its own polkit
   agent (Fedora package, F44+).
@@ -43,14 +50,17 @@ environment with a tiling-compositor setup:
   build automatically picks up the newest version.
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every (daily) image build automatically picks up the newest
-  version. It replaces Bazaar as the image's software and system manager.
+  version. It replaces Bazaar as the image's software and system manager. Its well-known optimization tweaks
+  are also baked into the image.
 - **zswap instead of zram** — the `zram-generator` packages are removed. Swapped pages are compressed by the
   kernel with `zstd` into a `zsmalloc` pool capped at 25% of RAM (with the shrinker enabled), backed by
   whatever swap device you provide yourself. See [Swap: zswap instead of zram](#swap-zswap-instead-of-zram).
-- **[bun](https://bun.sh) + [OpenCode](https://opencode.ai)** are intentionally **not** baked into the image:
-  on an atomic system, anything in `/usr` can only be updated with a new image deployment, so the
-  self-contained agent tooling works better installed at user level, where it can be updated at any time.
-  See [Installing OpenCode](#installing-opencode-optional-user-level).
+- **Snap packages (snapd)** — `snapd`, `snapd-selinux` and `squashfuse` are layered on, with the immutable
+  system adaptations described in [Snap packages](#snap-packages). Strictly confined and classic-confined
+  snaps both work out of the box.
+- **Simpler printer configuration** through `system-config-printer`.
+- **Friendlier terminal shell** and several `zsh` features while remaining on `bash` with a fully implemented
+  *[sloth-bash](https://github.com/psygreg/sloth-bash)* - another project of mine.
 
 Configuration lives in `dotfiles/`. The Niri files are installed under `/etc/niri/`; the package's
 `/usr/share/niri/defaults/config.kdl` becomes a small wrapper that includes the system config. The
@@ -170,31 +180,6 @@ rd.vconsole.keymap=br-abnt2
 Substitute your own layout. This is read by the initramfs immediately and makes the prompt typeable for that
 boot; then rebuild and rebase to make it permanent.
 
-
-# Installing OpenCode (optional, user-level)
-
-OpenCode (and its bun runtime) are not part of the image by design: on this atomic system only image updates
-change `/usr`, so keeping agent tooling user-installed lets it update at any time, independent of image
-deployments:
-
-1. Install bun the usual way (lands in `~/.bun/bin`; the official installer also adds it to PATH):
-   ```bash
-   curl -fsSL https://bun.sh/install | bash
-   ```
-2. Install OpenCode from its official npm package:
-   ```bash
-   bun install -g --trust @opencode/cli
-   ```
-3. Optionally, install the [agent-reflex](https://github.com/psygreg/agent-reflex) skill and let OpenCode
-   itself install the plugin on first use:
-   ```bash
-   bunx skills add psygreg/agent-reflex --skill agent-reflex -a opencode -g
-   ```
-   Start `opencode`, invoke the agent-reflex skill (e.g. "install agent-reflex") and answer the classifier
-   prompts in chat — the plugin then guards shell commands, compacts history, and tunes effort for your
-   System One decision model.
-
-
 # Swap: zswap instead of zram
 
 Bazzite's swap-on-zram (`zram-generator`) is removed. Swapped pages are compressed by the kernel's
@@ -214,6 +199,76 @@ No swap device ships with the image: create your own swap file or partition (see
 either way. The live state is visible (and tunable) under `/sys/kernel/zswap/`, e.g.
 `cat /sys/kernel/zswap/current_pool_size`.
 
+# Snap packages
+
+`snapd` is layered on top of Bazzite so snaps can be used alongside Flatpaks, Homebrew and the RPM
+base. On an immutable bootc/ostree system a plain `dnf install snapd` is not enough, so the image handles
+the immutable-specific parts at build time:
+
+## What the image provides
+
+- **`snapd`, `snapd-selinux` and `squashfuse`** (`build_files/build.sh`). `snapd-selinux` ships the `snappy`
+  SELinux policy module and the file contexts for `/var/lib/snapd`, `/var/snap` and the snapd binaries —
+  required because Bazzite runs SELinux in enforcing mode. `squashfuse` is the fallback for mounting `.snap`
+  squashfs images whenever the `squashfs` kernel module is not available (snapd itself requires
+  `((squashfuse and fuse) or kmod(squashfs.ko))`).
+- **`/snap -> var/lib/snapd/snap`**, created in the image. snapd accepts exactly two layouts for its mount
+  directory (`dirs.SupportsClassicConfinement` in the snapd source):
+  `/snap` as a real directory (the Ubuntu default) or `/snap` as a symlink to `/var/lib/snapd/snap` (the
+  Fedora/Arch convention). Fedora's `snapd` uses the second layout and deliberately does **not** ship the
+  link — on a mutable Fedora you create it yourself with `sudo ln -s /var/lib/snapd/snap /snap`. On this
+  image the root filesystem is read-only, so the link is baked into the image instead (relative target, so
+  it resolves the same in the build container, in the image, and on every deployed system). Without it,
+  strictly confined snaps still run, but classic snaps are refused with
+  *"classic confinement requires snaps under /snap or symlink from /snap to /var/lib/snapd/snap"*.
+- **snapd's runtime state under `/var`** (`system_files/usr/lib/tmpfiles.d/gregos-snapd.conf`). The RPM ships
+  those directories, but the image's `/var` content is not carried onto deployed hosts (ostree keeps the
+  host's `/var` and only seeds it at first install), and `bootc container lint` warns about image `/var`
+  content without matching tmpfiles.d entries. The tmpfiles snippet recreates the whole tree on every boot.
+- **`var-lib-snapd-snap.mount` and `var-snap.mount`**
+  (`system_files/usr/lib/systemd/system/`), enabled in the image. Upstream snapd ships these self-bind
+  `rbind,private,shared` mount units; Fedora's package drops them along with the `/snap` symlink. They make
+  the snap mount directories mount points with shared mount propagation, which snapd needs for snap
+  refreshes (LP: #1668759) and for parallel-installed classic snaps. Their upstream `Condition`s skip them
+  when snapd has already preserved a mount namespace, so enabling them unconditionally is safe.
+- **`snapd.socket`** is enabled (socket activation), matching Fedora defaults — `snapd.service` itself is
+  started on first use.
+
+## Using snaps
+
+```bash
+snap version                      # snapd should answer after the first invocation
+snap find vlc
+snap install vlc                  # strictly confined snap
+snap install code --classic       # classic snap - needs the /snap link, which the image ships
+```
+
+The first `snap` invocation may take a few seconds while snapd seeds the device
+(`sudo snap wait system seed.loaded` waits for it explicitly). Desktop entries of installed snaps land in
+`/var/lib/snapd/desktop`, which is already added to `XDG_DATA_DIRS` by snapd's own `environment.d` and
+`profile.d` snippets, so they appear in the Noctalia launcher after a re-login.
+
+## Known limits
+
+- **Confinement is weaker than on Ubuntu.** Fedora has no AppArmor, so snaps run without AppArmor
+  confinement (seccomp and the per-snap mount namespaces still apply). This is a Fedora-wide property of
+  snapd, not something this image changes.
+- **Classic snaps see the host filesystem**, as everywhere — they are unconfined by design.
+- **Home directories** must be under `/home` (they are on this image: `/home` is `/var/home`), since snapd
+  requires `$HOME` to live under `/home`.
+- Snap refreshes and installs update `/var/lib/snapd`, never `/usr`, so they survive image updates and
+  rollbacks untouched.
+
+# image-template README
+
+This repository is meant to be a template for building your own custom [bootc](https://github.com/bootc-dev/bootc) image. This template is the recommended way to make customizations to any image published by the Universal Blue Project.
+
+# Community
+
+If you have questions about this template after following the instructions, try the following spaces:
+- [Universal Blue Forums](https://universal-blue.discourse.group/)
+- [Universal Blue Discord](https://discord.gg/WEu6BdFEtp)
+- [bootc discussion forums](https://github.com/bootc-dev/bootc/discussions) - This is not an Universal Blue managed space, but is an excellent resource if you run into issues with building bootc images.
 
 # How to Use
 

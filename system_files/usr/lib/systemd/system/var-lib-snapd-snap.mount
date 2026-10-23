@@ -1,0 +1,29 @@
+[Unit]
+Description=snap mount directory mount
+Documentation=https://snapcraft.io/docs
+# Upstream snapd ships this unit (data/systemd/var-lib-snapd-snap/
+# var-lib-snapd-snap.mount), but the Fedora package drops it together with the
+# /snap symlink - both are considered "classic snap support" and left to the
+# user. gregOS ships it so the snap mount directory is a mount point with
+# shared propagation, which snapd needs for snap refreshes and for parallel
+# installed classic snaps (LP: #1668759). Conditions below mirror upstream:
+# only set up the self bind mount when no preserved snap mount namespace exists
+# yet, and defer it during an in-place package upgrade.
+ConditionPathExistsGlob=!/run/snapd/ns/*.mnt
+ConditionPathExists=!/run/snapd/packaging/prevent-mount-dir-activation
+# Do not activate on hybrid setups where the kernel snap is mounted early in
+# initramfs (that would end up with duplicate mounts).
+ConditionPathIsMountPoint=!/run/mnt/data
+Before=snapd.mounts-pre.target
+
+[Mount]
+# rbind - recursively bind the dir on top of itself, inherits shared
+# private - stop propagating to parent
+# shared - create a new shared peer group
+What=/var/lib/snapd/snap
+Where=/var/lib/snapd/snap
+Options=rbind,private,shared
+
+[Install]
+# When enabled, establish the mount early, before any snaps can run.
+WantedBy=local-fs.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=snap data directory mount
+Documentation=https://snapcraft.io/docs
+# Upstream snapd ships this unit (data/systemd/snap/var-snap.mount); the Fedora
+# package drops it. gregOS ships it so /var/snap is a mount point with shared
+# propagation for the same reasons as var-lib-snapd-snap.mount (snap refreshes,
+# parallel installed classic snaps).
+ConditionPathExistsGlob=!/run/snapd/ns/*.mnt
+ConditionPathExists=!/run/snapd/packaging/prevent-mount-dir-activation
+Before=snapd.mounts-pre.target
+Before=var-lib-snapd-snap.mount
+
+[Mount]
+# rbind - recursively bind the dir on top of itself, inherits shared
+# private - stop propagating to parent
+# shared - create a new shared peer group
+What=/var/snap
+Where=/var/snap
+Options=rbind,private,shared
+
+[Install]
+# When enabled, establish the mount early, before any snaps can run.
+WantedBy=local-fs.target

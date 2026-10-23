@@ -33,7 +33,9 @@ dnf5 install -y \
     adwaita-icon-theme \
     xdg-desktop-portal-gnome \
     xdg-desktop-portal-gtk \
-    google-noto-sans-cjk-vf-fonts
+    google-noto-sans-cjk-vf-fonts \
+    system-config-printer \
+    system-config-printer-udev
 
 ### Install noctalia-greeter and nwg-look from the Terra repository
 ##
@@ -349,6 +351,106 @@ systemctl enable gregos-zswap-setup.service
 #### Example for enabling a System Unit File
 
 systemctl enable podman.socket
+
+### Snap package support
+##
+## snapd is layered on so the system can install and run snaps in addition to
+## Flatpaks. Getting this to work properly on an immutable bootc/ostree system
+## takes more than just installing the RPMs, so the pieces are spelled out
+## below.
+##
+## Packages:
+##   snapd          - the daemon and the `snap` CLI. Pulls in snap-confine and
+##                    (on Fedora) requires snapd-selinux.
+##   snapd-selinux  - the SELinux policy module (snappy) for snapd and its
+##                    state directories. Bazzite runs SELinux in enforcing mode,
+##                    so this is not optional.
+##   squashfuse     - fallback squashfs mounting for snap images when the
+##                    squashfs kernel module is unavailable (containers, or a
+##                    kernel built without it).
+##
+## snapd itself requires `((squashfuse and fuse) or kmod(squashfs.ko))`, so
+## installing it here also verifies that the image can mount .snap squashfs
+## images one way or another.
+
+dnf5 install -y snapd snapd-selinux squashfuse
+
+## /snap: the classic-confinement mount point
+##
+## snapd accepts exactly two layouts for where snaps live:
+##   * /snap as a real directory (Ubuntu default), or
+##   * /snap as a symlink to /var/lib/snapd/snap (Fedora/Arch convention).
+##
+## Fedora's snapd uses /var/lib/snapd/snap and does NOT ship the symlink - on a
+## normal Fedora you create it by hand after installing snapd. Without it,
+## strictly confined snaps still run, but anything needing classic confinement
+## (`snap install code --classic` and friends) is rejected with "classic
+## confinement requires snaps under /snap or symlink from /snap to
+## /var/lib/snapd/snap".
+##
+## On bootc/ostree the root filesystem is read-only, so the link has to exist
+## in the IMAGE, not be created on the installed system. It is created here
+## (after the package transactions) as a relative symlink exactly like the one
+## the snapd spec builds for Amazon Linux:
+##
+##   /snap -> var/lib/snapd/snap
+##
+## A relative target is used deliberately: /var/lib/snapd/snap is the
+## persistent, writable state directory, so the link resolves correctly in the
+## build container, in the image, and on every deployed system.
+##
+## system_files cannot carry this link: systemd-tmpfiles refuses to create
+## paths that are symlinks pointing outside /var or /run.
+
+if [[ -e /snap || -L /snap ]]; then
+    echo "/snap already exists in the image; leaving it untouched" >&2
+else
+    ln -sr /var/lib/snapd/snap /snap
+fi
+
+# Fail the build if the link is wrong - this is the exact regression that makes
+# classic snaps uninstallable.
+if [[ ! -L /snap ]] || [[ "$(readlink /snap)" != "var/lib/snapd/snap" ]]; then
+    echo "/snap is not a symlink to var/lib/snapd/snap (got: $(readlink /snap 2>/dev/null || echo 'not a symlink'))" >&2
+    exit 1
+fi
+
+## snapd runtime state under /var
+##
+## The snapd RPM ships these directories, but on bootc/ostree the image's /var
+## content is not carried onto deployed hosts (ostree keeps the host's /var and
+## only seeds it at first install), and `bootc container lint` warns about image
+## /var content without matching tmpfiles.d entries. gregos-snapd.conf declares
+## every directory the package expects, so they are created on every boot with
+## the right ownership.
+
+## snapd.socket and the mount propagation units
+##
+## snapd is socket-activated on Fedora: only snapd.socket is enabled and the
+## daemon starts on first use. Fedora's snapd does NOT ship
+## var-lib-snapd-snap.mount / var-snap.mount (upstream snapd does, the Fedora
+## spec drops them along with the /snap symlink), but snapd still wants those
+## directories to be mount points with shared propagation so snap refreshes and
+## mount namespaces propagate correctly (LP: #1668759) and parallel-installed
+## classic snaps work at all.
+##
+## The units are therefore shipped as image-owned files (system_files) and
+## enabled here. They are self-bind mounts with `rbind,private,shared` and are
+## skipped by their Conditions when snapd has already preserved a mount
+## namespace, so they are safe to enable unconditionally.
+
+systemctl enable snapd.socket
+systemctl enable var-lib-snapd-snap.mount var-snap.mount
+
+# Verify the units we ship are the ones systemd will pick up. Fedora's snapd
+# has no [Install] section on these units in some releases, so the enablement
+# symlinks are created above; make sure that actually happened.
+for unit in snapd.socket var-lib-snapd-snap.mount var-snap.mount; do
+    if ! systemctl is-enabled "${unit}" >/dev/null 2>&1; then
+        echo "systemd unit '${unit}' is not enabled after enablement" >&2
+        exit 1
+    fi
+done
 
 ### Rebuild the initramfs so the console keymap is baked in
 ##

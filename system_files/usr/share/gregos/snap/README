@@ -1,0 +1,24 @@
+# gregOS: /snap -> /var/lib/snapd/snap
+#
+# Classic-confined snaps (e.g. `code --classic`) require snaps to be reachable
+# under /snap. snapd only accepts two layouts (dirs.SupportsClassicConfinement
+# in the snapd source):
+#
+#   * /snap as a real directory  (snapd's own mount dir, the default on Ubuntu)
+#   * /snap as a symlink to /var/lib/snapd/snap  (Fedora/Arch documented setup)
+#
+# Fedora's snapd package uses the second layout (/var/lib/snapd/snap) and does
+# NOT ship the symlink - the user is told to create it by hand. On a mutable
+# Fedora that is `sudo ln -s /var/lib/snapd/snap /snap`; on this immutable
+# bootc image the root filesystem is read-only, so the link has to be baked
+# into the image at build time (same trick the snapd spec uses for Amazon
+# Linux: `ln -sr /var/lib/snapd/snap /snap`).
+#
+# /var is the persistent, writable part of an ostree system, so the target is
+# always valid at runtime and the link survives every deployment.
+#
+# Created by build_files/build.sh ("Snap package support") rather than here:
+# systemd-tmpfiles refuses to create entries whose path is a symlink to outside
+# /var or /run ("Unsafe path transition"), and /snap is a top-level path.
+
+# Managed by gregOS. See build_files/build.sh and README.md ("Snap packages").
