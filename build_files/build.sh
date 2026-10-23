@@ -33,7 +33,7 @@ dnf5 install -y \
     adwaita-icon-theme \
     xdg-desktop-portal-gnome \
     xdg-desktop-portal-gtk \
-    google-noto-sans-cjk-vf-fonts \
+    google-noto-sans-cjk-fonts \
     system-config-printer \
     system-config-printer-udev
 
@@ -534,13 +534,13 @@ done
 ## Fonts are then listed twice wherever they were already visible (host
 ## fontconfig, and Flatpaks on runtimes that share /usr/share/fonts).
 
-systemctl enable var-usrlocal-share-fonts.mount
+# systemctl enable var-usrlocal-share-fonts.mount
 
 # Verify the unit we ship is the one systemd will pick up.
-if ! systemctl is-enabled var-usrlocal-share-fonts.mount >/dev/null 2>&1; then
-    echo "systemd unit 'var-usrlocal-share-fonts.mount' is not enabled after enablement" >&2
-    exit 1
-fi
+#if ! systemctl is-enabled var-usrlocal-share-fonts.mount >/dev/null 2>&1; then
+    #echo "systemd unit 'var-usrlocal-share-fonts.mount' is not enabled after enablement" >&2
+    #exit 1
+#fi
 
 ### Rebuild the initramfs so the console keymap is baked in
 ##
