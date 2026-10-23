@@ -285,6 +285,94 @@ if [[ ! -e /usr/share/thumbnailers/glycin-image-rs.thumbnailer ]] \
     exit 1
 fi
 
+### Debloat: drop unused and duplicated packages
+##
+## Everything below is dead weight on a gaming/desktop image: either nothing
+## uses it at runtime, or it duplicates a stack gregOS does not use. Verified
+## leaves (no other installed package Requires them) and full clusters, so the
+## removal is safe and self-contained. The base image (Bazzite) keeps drifting,
+## so this section only removes what is actually present: a name that is not
+## installed is skipped rather than failing the build.
+##
+## install_weak_deps=False on the removal keeps dnf from re-pulling anything the
+## base image weakly Recommends into the gaps (e.g. mariadb Recommends
+## mariadb-server, gtk3/qt weakly recommend the ibus input modules). Removing the
+## whole cluster (rather than one member) means no leftover member is left to
+## pull its siblings back in.
+##
+## --- MariaDB server (~~132 MB) ---
+## A full MariaDB SERVER on a desktop. Nothing Requires it: it is an orphan of
+## the KDE PIM/akonadi stack that the desktop cleanup above strips. The generic
+## client library (mariadb-connector-c[-config]) is kept - it is a normal shared
+## library other code can link against.
+##
+## --- ibus input-method framework (~~370 MB) ---
+## gregOS standardises input on fcitx5 (installed above) with mozc / chinese /
+## anthy / hangul / libthai / m17n engines. ibus is a second, redundant IM
+## framework. Its engines' runtime libraries are NOT part of this removal and are
+## kept because fcitx5 consumes them directly:
+##   anthy, anthy-unicode, m17n-lib, m17n-db, libthai, libthai-data, libime*
+## (fcitx5-anthy -> libanthy.so.0 from anthy; fcitx5-m17n -> m17n-lib;
+##  fcitx5-libthai -> libthai). kasumi-unicode is the anthy dictionary EDITOR and
+## is only held by ibus-anthy; it goes with ibus. unicode-ucd is large Unicode
+## character data that only ibus-typing-booster consumed; glibc and the CJK/IME
+## stacks do their own Unicode handling, so it is safe to drop.
+##
+## --- unused leaf applications (~~50 MB) ---
+## makemkv (DVD/Blu-ray ripper), stress-ng (load tester),
+## virtualbox-guest-additions (only useful inside a VirtualBox guest).
+##
+## --- vim: keep a bare vi, drop the full editor (~~43 MB) ---
+## We keep the minimal `vi` (vim-minimal) as a rescue editor but drop the full
+## `vim` editor and its GUI/runtime. IMPORTANT dependency detail: vim-minimal
+## hard-Requires vim-data (its runtime syntax/indent files), and vim-data is in
+## turn Requirs'd by vim-common. So keeping a working `vi` means keeping BOTH
+## vim-minimal AND vim-data; removing vim-data would drag vim-minimal out with
+## it and leave no `vi`. We therefore remove only:
+##   vim-enhanced (the `vim` editor), vim-common (shared vimscript), vim-filesystem
+## and KEEP:
+##   vim-minimal (provides /usr/bin/vi and `vi`), vim-data (its runtime)
+## nano is also installed as a second editor, so the image always has one.
+
+# Remove only names that are actually installed. dnf5 is a no-op for names that
+# are not present, but the rpm -q filter below keeps the build log honest about
+# what this image really dropped (and tolerates base-image drift).
+DEBLOAT_MARIADB='mariadb-server mariadb mariadb-backup mariadb-errmsg
+    mariadb-common mariadb-gssapi-server mariadb-cracklib-password-check
+    mysql-selinux qt6-qtbase-mysql'
+
+# Full ibus cluster (framework + engines + panel + setup + python bindings +
+# the pinyin lib/data and the typing-booster emoji data it dragged in).
+DEBLOAT_IBUS='ibus ibus-libs ibus-gtk3 ibus-gtk4 ibus-panel ibus-setup
+    python3-ibus ibus-anthy ibus-anthy-python ibus-hangul ibus-libpinyin
+    ibus-m17n ibus-chewing ibus-typing-booster libpinyin libpinyin-data
+    cldr-emoji-annotation cldr-emoji-annotation-dtd kasumi-unicode
+    unicode-ucd'
+
+DEBLOAT_APPS='makemkv stress-ng virtualbox-guest-additions'
+
+# vim: drop the full editor, keep the bare `vi`. vim-minimal and vim-data are
+# intentionally NOT listed (see the note above) - they provide /usr/bin/vi.
+DEBLOAT_VIM='vim-enhanced vim-common vim-filesystem'
+
+debloat_pkgs=""
+for debloat_group in "${DEBLOAT_MARIADB}" "${DEBLOAT_IBUS}" "${DEBLOAT_APPS}" "${DEBLOAT_VIM}"; do
+    # shellcheck disable=SC2086  # intentional word-splitting of the package lists
+    for pkg in ${debloat_group}; do
+        if rpm -q "${pkg}" >/dev/null 2>&1; then
+            debloat_pkgs+=" ${pkg}"
+        fi
+    done
+done
+
+if [[ -n "${debloat_pkgs// /}" ]]; then
+    echo "Debloat: removing unused/duplicated packages:${debloat_pkgs}"
+    # shellcheck disable=SC2086  # intentional word-splitting
+    dnf5 -y --setopt=install_weak_deps=False remove ${debloat_pkgs}
+else
+    echo "Debloat: nothing from the removal set is installed; skipping"
+fi
+
 # Fail the build if a future greetd package drops either existing PAM hook;
 # installing the module alone would then no longer unlock/start the keyring.
 if ! grep -Eq '^-?auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so([[:space:]]|$)' /etc/pam.d/greetd \
@@ -511,36 +599,6 @@ for unit in snapd.socket var-lib-snapd-snap.mount var-snap.mount; do
         exit 1
     fi
 done
-
-### Host fonts for Flatpak apps
-##
-## Flatpak apps on the freedesktop 26.08 runtime (Fluxer, Discord, Obsidian and
-## others) only see the runtime's own fonts, so host fonts such as Noto CJK are
-## missing. Two things combine to cause it:
-##
-##   - Flatpak shares the host's /usr/share/fonts as /run/host/fonts, remapped
-##     to the path /usr/share/fonts inside the sandbox.
-##   - The runtime ships a fontconfig cache for its own /usr/share/fonts, which
-##     fontconfig also uses for the remapped host directory while that
-##     directory's mtime matches. Every directory under /usr on this image has
-##     mtime 0, so the runtime cache always matches and the host fonts are never
-##     scanned. Firefox on the 25.08 runtime does not hit this.
-##
-## Flatpak also shares the host's /usr/local/share/fonts as /run/host/local-fonts,
-## without remapping, so the same fonts are reachable through a path that does
-## not collide. /usr/local is a symlink into /var, which an image does not
-## carry, so the fonts cannot be placed there at build time. Instead,
-## var-usrlocal-share-fonts.mount bind-mounts /usr/share/fonts onto it at boot.
-## Fonts are then listed twice wherever they were already visible (host
-## fontconfig, and Flatpaks on runtimes that share /usr/share/fonts).
-
-# systemctl enable var-usrlocal-share-fonts.mount
-
-# Verify the unit we ship is the one systemd will pick up.
-#if ! systemctl is-enabled var-usrlocal-share-fonts.mount >/dev/null 2>&1; then
-    #echo "systemd unit 'var-usrlocal-share-fonts.mount' is not enabled after enablement" >&2
-    #exit 1
-#fi
 
 ### Rebuild the initramfs so the console keymap is baked in
 ##
