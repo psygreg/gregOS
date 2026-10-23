@@ -76,29 +76,29 @@ layer-rule {
 }
 
 environment {
-  // Restore dead-key / compose-key handling in GTK4 apps (terminals such as
-  // BlackBox/ptyxis, editors, etc.) with layouts like us-intl.
+  // Restore dead-key / compose-key handling everywhere through fcitx5
+  // (terminals such as BlackBox/ptyxis, GNOME Text Editor, etc.) with layouts
+  // like us-intl, and enable full input-method (non-Latin) input.
   //
   // Since GTK 4.20 (GNOME 49+), GTK no longer implements dead-key and
   // X11-style compose sequences itself on Wayland: it delegates that to an
-  // input-method framework via the text-input protocol. This image has no
-  // input-method daemon running in the niri session, so GTK4 apps receive
-  // dead keys as plain keysyms and the accents never appear. Forcing the
-  // built-in "simple" input-method module makes GTK fall back to its own
-  // compose/dead-key implementation, which is the upstream-documented
-  // workaround. If you later install and start a real input method (IBus or
-  // Fcitx5), remove this line and set GTK_IM_MODULE to that framework's
-  // name instead, or leave it unset to use the text-input protocol.
-  GTK_IM_MODULE "simple"
-
-  // Same dead-key / compose-key fix for Qt apps. Qt ships a dedicated
-  // "compose" input-method module (QComposeInputContext) that handles dead
-  // keys and X11-style compose sequences. On Wayland, Qt otherwise uses its
-  // text-input context, which does no composing, so accents never appear in
-  // Qt apps either. Pointing QT_IM_MODULE at "compose" restores it. If you
-  // later run a real input method (IBus or Fcitx5), remove this line and use
-  // the framework's own module instead (e.g. QT_IM_MODULE "ibus").
-  QT_IM_MODULE "compose"
+  // input-method framework via the text-input protocol. Qt's Wayland
+  // text-input path does no composing either. fcitx5 is installed by the
+  // image (fcitx5-gtk ships the GTK2/3/4 modules, fcitx5-qt the Qt5/6 ones)
+  // and started below with spawn-at-startup. Pointing every toolkit at it
+  // gives consistent dead-key/compose behaviour regardless of app toolkit,
+  // and also makes full CJK/other input methods available once configured.
+  //
+  // Layout and engine settings live in Noctalia-independent fcitx5 config;
+  // edit with `fcitx5-config-qt` (fcitx5-configtool).
+  //
+  // If fcitx5 is ever removed from the image, delete these three lines to
+  // restore toolkit-builtin behaviour (GTK composes via text-input, and
+  // "GTK_IM_MODULE simple" / "QT_IM_MODULE compose" are the documented
+  // fallback workarounds).
+  GTK_IM_MODULE "fcitx"
+  QT_IM_MODULE "fcitx"
+  XMODIFIERS "@im=fcitx"
 
   QT_QPA_PLATFORMTHEME "qt6ct"
   XCURSOR_THEME "Adwaita"
@@ -111,6 +111,7 @@ hotkey-overlay {
 
 spawn-at-startup "/usr/libexec/xdg-desktop-portal"
 spawn-at-startup "/usr/libexec/xdg-desktop-portal-gtk"
+spawn-at-startup "fcitx5"
 spawn-at-startup "noctalia"
 
 include "noctalia.kdl"

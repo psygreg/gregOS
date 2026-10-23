@@ -178,6 +178,38 @@ for just_file in /usr/share/ublue-os/just/*.just; do
 done
 shopt -u nullglob
 
+### Input method: fcitx5
+##
+## GTK 4.20 (GNOME 49+) no longer implements dead-key/X11-style compose
+## sequences itself on Wayland: it delegates composing to an input-method
+## framework via the text-input protocol, and Qt's Wayland text-input path
+## likewise does no composing. Bazzite already ships fcitx5, but incompletely
+## (no GUI configurator, no toolkit integration modules), which produced
+## inconsistent dead-key behaviour across apps — some toolkits fell back to
+## built-in compose handling (one reason BlackBox worked while e.g. GNOME
+## Text Editor did not), others received dead keys as plain keysyms. Install
+## the full stack so one framework handles composing everywhere:
+##
+##   fcitx5              core daemon + engine
+##   fcitx5-gtk          input-context modules for GTK2/GTK3/GTK4
+##   fcitx5-qt           input-context modules for Qt5/Qt6
+##   fcitx5-configtool   config GUI (fcitx5-config-qt) + KCM page
+##
+## The niri session starts fcitx5 (spawn-at-startup) and exports
+## GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=fcitx (dotfiles/niri/config.kdl), so
+## GTK and Qt apps compose dead keys and accents through fcitx5. Layout and
+## engine settings are user-configurable with the fcitx5-config-qt GUI.
+## Flatpak apps do not inherit session environment: users should run
+##   flatpak override --user --env=GTK_IM_MODULE=fcitx --env=QT_IM_MODULE=fcitx \
+##     --env=XMODIFIERS=@im=fcitx
+## for Flatpaks that need it.
+##
+## NOTE: this must stay AFTER the desktop-environment cleanup below. It is
+## placed inside the cross-desktop applications transaction on purpose:
+## fcitx5-configtool depends on KDE Frameworks (kf6-*) packages, which the
+## cleanup's broad `kf6-`/`kde` removal patterns would otherwise strip again,
+## leaving fcitx5-configtool broken.
+
 ### Install selected cross-desktop applications
 ##
 ## These applications are useful in the niri + Noctalia session without
@@ -203,7 +235,11 @@ dnf5 install -y \
     showtime \
     kde-connect \
     wlsunset \
-    cava
+    cava \
+    fcitx5 \
+    fcitx5-gtk \
+    fcitx5-qt \
+    fcitx5-configtool
 
 ### Keep image thumbnailers
 ##

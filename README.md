@@ -87,14 +87,21 @@ match the shipped files, leaving user edits untouched.
 - The greeter remembers the last session and user picked; niri is the default session. Noctalia's settings
   app (`Mod+Comma`) manages the shell, and its polkit agent is pre-enabled via
   `~/.config/noctalia/10-gregos-defaults.toml`.
-- **Dead keys (compose/accented characters) work in GTK4 and Qt apps.** Since GTK 4.20 (GNOME 49+), GTK no
-  longer handles dead-key and X11-style compose sequences itself on Wayland — it delegates to an input-method
-  framework, and Qt's Wayland text-input path likewise does no composing. Without an input method running,
-  layouts like `us-intl` type accents that never appear (most visible in terminals like BlackBox/ptyxis). The
-  niri session sets `GTK_IM_MODULE=simple` (GTK's built-in compose/dead-key handling) and
-  `QT_IM_MODULE=compose` (Qt's `QComposeInputContext`), so both toolkits compose accented characters. If you
-  later run a real input method (IBus or Fcitx5), remove those lines in `dotfiles/niri/config.kdl` and use the
-  framework's own module instead (e.g. `GTK_IM_MODULE=ibus`, `QT_IM_MODULE=ibus`).
+- **Dead keys (compose/accented characters) work consistently in all apps** (GTK2/3/4 and Qt) with layouts
+  like `us-intl`, through **fcitx5**. Since GTK 4.20 (GNOME 49+), GTK no longer handles dead-key and
+  X11-style compose sequences itself on Wayland — it delegates to an input-method framework, and Qt's Wayland
+  text-input path likewise does no composing. Without a running input method, layouts like `us-intl` type
+  accents that never appear, and toolkit-builtin workarounds (`GTK_IM_MODULE=simple`, `QT_IM_MODULE=compose`)
+  behave inconsistently across apps. The image ships the full fcitx5 stack (`fcitx5`, `fcitx5-gtk`,
+  `fcitx5-qt`, `fcitx5-configtool`) and the niri session starts it and exports
+  `GTK_IM_MODULE=fcitx`, `QT_IM_MODULE=fcitx`, `XMODIFIERS=@im=fcitx`, so every toolkit composes through
+  fcitx5. Keyboard layout / input-method engines are configured with `fcitx5-config-qt`.
+  Flatpak apps do not inherit session environment; run
+  `flatpak override --user --env=GTK_IM_MODULE=fcitx --env=QT_IM_MODULE=fcitx --env=XMODIFIERS=@im=fcitx` to
+  cover them. On real input-method needs (e.g. CJK engines like `fcitx5-mozc`, `fcitx5-chinese-addons`) the
+  infrastructure is already in place — just install the engine and select it in fcitx5-config-qt.
+  Note that existing homes with a user-modified niri `config.kdl` keep that file, so those users need to
+  apply the same `environment` and `spawn-at-startup` changes by hand.
 
 
 # Why a render wrapper
