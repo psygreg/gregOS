@@ -59,6 +59,8 @@ environment with a tiling-compositor setup:
   system adaptations described in [Snap packages](#snap-packages). Strictly confined and classic-confined
   snaps both work out of the box.
 - **Simpler printer configuration** through `system-config-printer`.
+- **Host fonts in Flatpak apps** — Flatpaks on the freedesktop 26.08 runtime can use the host's fonts, Noto CJK
+  included. See [Host fonts in Flatpak apps](#host-fonts-in-flatpak-apps).
 - **Friendlier terminal shell** and several `zsh` features while remaining on `bash` with a fully implemented
   *[sloth-bash](https://github.com/psygreg/sloth-bash)* - another project of mine.
 
@@ -215,6 +217,26 @@ No swap device ships with the image: create your own swap file or partition (see
 [the Bazzite swapfile guide](https://docs.bazzite.gg/Advanced/swapfile/)); zswap compresses in front of it
 either way. The live state is visible (and tunable) under `/sys/kernel/zswap/`, e.g.
 `cat /sys/kernel/zswap/current_pool_size`.
+
+# Host fonts in Flatpak apps
+
+Flatpak apps on the freedesktop 26.08 runtime (Fluxer, Discord, Obsidian, and others) did not see the host's
+fonts, so Japanese, Chinese and Korean text had no glyphs. The cause and the build-time fix are described in
+the "Host fonts for Flatpak apps" section of [build_files/build.sh](./build_files/build.sh). The fix is the
+`var-usrlocal-share-fonts.mount` unit, which binds `/usr/share/fonts` onto `/usr/local/share/fonts` at boot.
+
+To check it on a machine that runs the image:
+
+```bash
+systemctl status var-usrlocal-share-fonts.mount                       # active (mounted)
+flatpak run --command=sh app.fluxer.Fluxer -c 'fc-list :lang=ja | wc -l'   # non-zero
+```
+
+- The mount is skipped while `/usr/local/share/fonts` contains files, so it never hides them. Move any such
+  fonts to `~/.local/share/fonts` to get the fix.
+- Every font is listed twice wherever host fonts were already visible: on the host itself (host fontconfig
+  scans `/usr/local/share/fonts` too) and in Flatpaks on runtimes that already shared `/usr/share/fonts`, such as
+  Firefox on the 25.08 runtime.
 
 # Snap packages
 

@@ -512,6 +512,36 @@ for unit in snapd.socket var-lib-snapd-snap.mount var-snap.mount; do
     fi
 done
 
+### Host fonts for Flatpak apps
+##
+## Flatpak apps on the freedesktop 26.08 runtime (Fluxer, Discord, Obsidian and
+## others) only see the runtime's own fonts, so host fonts such as Noto CJK are
+## missing. Two things combine to cause it:
+##
+##   - Flatpak shares the host's /usr/share/fonts as /run/host/fonts, remapped
+##     to the path /usr/share/fonts inside the sandbox.
+##   - The runtime ships a fontconfig cache for its own /usr/share/fonts, which
+##     fontconfig also uses for the remapped host directory while that
+##     directory's mtime matches. Every directory under /usr on this image has
+##     mtime 0, so the runtime cache always matches and the host fonts are never
+##     scanned. Firefox on the 25.08 runtime does not hit this.
+##
+## Flatpak also shares the host's /usr/local/share/fonts as /run/host/local-fonts,
+## without remapping, so the same fonts are reachable through a path that does
+## not collide. /usr/local is a symlink into /var, which an image does not
+## carry, so the fonts cannot be placed there at build time. Instead,
+## var-usrlocal-share-fonts.mount bind-mounts /usr/share/fonts onto it at boot.
+## Fonts are then listed twice wherever they were already visible (host
+## fontconfig, and Flatpaks on runtimes that share /usr/share/fonts).
+
+systemctl enable var-usrlocal-share-fonts.mount
+
+# Verify the unit we ship is the one systemd will pick up.
+if ! systemctl is-enabled var-usrlocal-share-fonts.mount >/dev/null 2>&1; then
+    echo "systemd unit 'var-usrlocal-share-fonts.mount' is not enabled after enablement" >&2
+    exit 1
+fi
+
 ### Rebuild the initramfs so the console keymap is baked in
 ##
 ## This MUST be the last step: the initramfs is generated from the final package
