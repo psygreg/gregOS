@@ -6,13 +6,17 @@ window-rule {
   clip-to-geometry true
 }
 
-// Floating Noctalia settings window.
+// Floating Noctalia settings window. Its size is generated per display in
+// gregos-display.kdl (see below).
 window-rule {
   match app-id="dev.noctalia.Noctalia"
   open-floating true
-  default-column-width { fixed 1080; }
-  default-window-height { fixed 920; }
 }
+
+// Per-display settings (native resolution at the highest refresh rate, and the
+// settings window size), generated at session start by gregos-niri-display-setup.
+// Optional: niri starts normally until the file exists.
+include optional=true "~/.config/niri/gregos-display.kdl"
 
 debug {
   // Allows notification actions and window activation from Noctalia.
@@ -20,16 +24,14 @@ debug {
 }
 
 input {
-    // ... outras configurações como o keyboard ...
+    // Flat, unaccelerated pointer tracking (consistent feel for gaming/precise
+    // mouse work). Keyboard, touchpad and other input settings are left at
+    // niri's defaults; add sections here if you need to tune them.
 
     mouse {
         accel-profile "flat"
         accel-speed 0.0
     }
-}
-
-output "HDMI-A-1" {
-    mode "2560x1440@119.998"
 }
 
 cursor {
@@ -49,25 +51,47 @@ binds {
     Mod+W { focus-window-or-workspace-up; }
     Mod+S { focus-window-or-workspace-down; }
     Mod+Q { close-window; }
-    
+
+    // Navigation
     Mod+Shift+A { move-column-left; }
     Mod+Shift+D { move-column-right; }
     Mod+Shift+S { move-window-to-workspace-down; }
     Mod+Shift+W { move-window-to-workspace-up; }
-    
+    Mod+F { maximize-column; }
+    Mod+F11 { fullscreen-window; }
+
+    // 'Roll binds' - navigation
+    Mod+WheelScrollDown cooldown-ms=150 { focus-workspace-down; }
+    Mod+WheelScrollUp cooldown-ms=150 { focus-workspace-up; }
+    Mod+Alt+WheelScrollDown cooldown-ms=150 { focus-column-right; }
+    Mod+Alt+WheelScrollUp cooldown-ms=150 { focus-column-left; }
+
+    // 'Roll binds' - volume
+    Mod+Shift+WheelScrollDown cooldown-ms=150 { spawn-sh "noctalia msg volume-down"; }
+    Mod+Shift+WheelScrollUp cooldown-ms=150 { spawn-sh "noctalia msg volume-up"; }
+
     Print { spawn-sh "noctalia msg screenshot-region"; }
+    // Window screenshot uses niri's built-in capture (clipboard + ~/Pictures/
+    // Screenshots). Noctalia's window capture (noctalia msg screenshot-window)
+    // needs ext-image-copy-capture-v1 + ext-foreign-toplevel-image-capture-
+    // source-manager-v1 support from niri; the built-in works regardless.
     Mod+Print { screenshot-window; }
 
     // Audio & Brightness
-    XF86AudioRaiseVolume { spawn-sh "noctalia msg volume-up"; }
-    XF86AudioLowerVolume { spawn-sh "noctalia msg volume-down"; }
-    XF86AudioMute { spawn-sh "noctalia msg volume-mute"; }
-    XF86MonBrightnessUp { spawn-sh "noctalia msg brightness-up"; }
-    XF86MonBrightnessDown { spawn-sh "noctalia msg brightness-down"; }
+    // allow-when-locked=true keeps these working on the lock screen, matching
+    // niri's default config for media keys.
+    XF86AudioRaiseVolume allow-when-locked=true { spawn-sh "noctalia msg volume-up"; }
+    XF86AudioLowerVolume allow-when-locked=true { spawn-sh "noctalia msg volume-down"; }
+    XF86AudioMute allow-when-locked=true { spawn-sh "noctalia msg volume-mute"; }
+    XF86MonBrightnessUp allow-when-locked=true { spawn-sh "noctalia msg brightness-up"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn-sh "noctalia msg brightness-down"; }
+
+    // Program shortcuts
+    Mod+T { spawn "blackbox-terminal"; }
 }
 
 layout {
-    default-column-width { proportion 0.9; }
+    default-column-width { proportion 0.5; }
 }
 
 layer-rule {
@@ -111,6 +135,7 @@ hotkey-overlay {
 
 spawn-at-startup "/usr/libexec/xdg-desktop-portal"
 spawn-at-startup "/usr/libexec/xdg-desktop-portal-gtk"
+spawn-at-startup "/usr/libexec/gregos/niri-display-setup"
 spawn-at-startup "fcitx5"
 spawn-at-startup "noctalia"
 

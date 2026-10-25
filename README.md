@@ -78,6 +78,14 @@ match the shipped files, leaving user edits untouched.
   [Noctalia niri guide](https://docs.noctalia.dev/noctalia/compositor-settings/niri/): rounded corners,
   Noctalia IPC keybinds (`Mod+Space` launcher, `Mod+P` control center, `Mod+Comma` settings, `Alt+Tab`
   window switcher), volume/brightness keys, screenshot binds, and the `noctalia-backdrop` layer rule.
+- **Displays are detected at login.** `gregos-niri-display-setup` (started by `spawn-at-startup`) asks niri for
+  each output's modes and sets it to its native resolution at the highest refresh rate it supports, so a 144 Hz
+  monitor runs at 144 Hz without any configuration. The result is written to `~/.config/niri/gregos-display.kdl`,
+  which is regenerated on every login and only rewritten when it changes. The Noctalia settings window is sized
+  from the screen (1080x920 on a 2560x1440 display, scaled proportionally elsewhere). To override a display, declare
+  `output "NAME" { mode "WIDTHxHEIGHT@REFRESH"; }` in your `~/.config/niri/config.kdl`; the setup script leaves
+  that output alone. To change the settings window size, add a `window-rule` below the `include` line in your
+  `config.kdl`.
 - Noctalia starts automatically with the session (`spawn-at-startup "noctalia"`).
 - Portals: `xdg-desktop-portal-gtk` + `xdg-desktop-portal-gnome` (niri's screencast path), per niri/Noctalia
   recommendations. Xwayland apps run through `xwayland-satellite`, which is a dependency of the Fedora niri
@@ -125,6 +133,56 @@ match the shipped files, leaving user edits untouched.
   `~/.config/chromium-flags.conf` or the app's own flags file) to take part in the Wayland input-method path.
   Note that existing homes with a user-modified niri `config.kdl` keep that file, so those users need to
   apply the same `environment` and `spawn-at-startup` changes by hand.
+
+## Keyboard shortcuts
+
+`Mod` is the Super (Windows) key. The bindings below are defined in `dotfiles/niri/config.kdl`.
+
+**Shell and launchers**
+
+| Shortcut | Action |
+|---|---|
+| `Mod+Space` | Noctalia app launcher |
+| `Mod+P` | Noctalia control center |
+| `Mod+Comma` | Noctalia settings |
+| `Mod+T` | Open terminal (BlackBox) |
+| `Alt+Tab` / `Mod+Tab` | Window switcher (hold to browse) |
+
+**Windows and columns**
+
+| Shortcut | Action |
+|---|---|
+| `Mod+A` / `Mod+D` | Focus column left / right |
+| `Mod+W` / `Mod+S` | Focus window, or workspace, up / down |
+| `Mod+Shift+A` / `Mod+Shift+D` | Move column left / right |
+| `Mod+Shift+W` / `Mod+Shift+S` | Move window to workspace up / down |
+| `Mod+F` | Maximize column |
+| `Mod+F11` | Fullscreen window |
+| `Mod+Q` | Close window |
+
+**Mouse wheel**
+
+| Shortcut | Action |
+|---|---|
+| `Mod` + wheel up / down | Focus workspace up / down |
+| `Mod+Alt` + wheel up / down | Focus column left / right |
+| `Mod+Shift` + wheel up / down | Volume up / down |
+
+**Screenshots**
+
+| Shortcut | Action |
+|---|---|
+| `Print` | Region screenshot (Noctalia) |
+| `Mod+Print` | Window screenshot (niri built-in: clipboard and `~/Pictures/Screenshots`) |
+
+**Media and brightness** (these also work on the lock screen)
+
+| Key | Action |
+|---|---|
+| Volume up / down / mute | Noctalia volume and mute |
+| Brightness up / down | Noctalia brightness |
+
+The mouse-wheel binds use a 150 ms cooldown so one scroll step doesn't move several places at once.
 
 # Credential storage: one supervised GNOME Keyring
 
