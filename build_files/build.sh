@@ -183,17 +183,24 @@ shopt -u nullglob
 ## GTK 4.20 (GNOME 49+) no longer implements dead-key/X11-style compose
 ## sequences itself on Wayland: it delegates composing to an input-method
 ## framework via the text-input protocol, and Qt's Wayland text-input path
-## likewise does no composing. Bazzite already ships fcitx5, but incompletely
-## (no GUI configurator, no toolkit integration modules), which produced
-## inconsistent dead-key behaviour across apps — some toolkits fell back to
-## built-in compose handling (one reason BlackBox worked while e.g. GNOME
-## Text Editor did not), others received dead keys as plain keysyms. Install
-## the full stack so one framework handles composing everywhere:
+## likewise does no composing. So dead keys only appear in an app when a real
+## input method is RUNNING and the app is actually talking to it.
+##
+## Bazzite already ships the complete fcitx5 stack (daemon, the GTK2/3/4 and
+## Qt5/6 input-context modules, and fcitx5-configtool / fcitx5-config-qt) plus
+## the ibus stack. What it does NOT do is wire any of it up: nothing starts an
+## input method and no environment selects one, so the toolkits were left on
+## their built-in, inconsistent fallbacks — some composed dead keys themselves
+## (one reason BlackBox worked while e.g. GNOME Text Editor did not), others
+## got dead keys as plain keysyms and dropped the accents.
+##
+## This section therefore pins the fcitx5 stack explicitly so a future base
+## image cannot silently drop it, and adds the language engines:
 ##
 ##   fcitx5              core daemon + engine
 ##   fcitx5-gtk          input-context modules for GTK2/GTK3/GTK4
 ##   fcitx5-qt           input-context modules for Qt5/Qt6
-##   fcitx5-configtool   config GUI (fcitx5-config-qt) + KCM page
+##   fcitx5-configtool   config GUI (fcitx5-config-qt)
 ##
 ## Engine packages are pre-installed so a shipped image covers the locales
 ## that need real IME input out of the box. They are inactive by default:
@@ -216,16 +223,20 @@ shopt -u nullglob
 ## /etc/flatpak/overrides/global (the system-wide override Flatpak merges for
 ## every installed app) so Flatpaks get the same IM environment without any
 ## user action. Setting these env vars only switches which input-context
-## module the toolkits load: with an fcitx5 module installed (present in the
-## freedesktop runtimes) apps talk to fcitx5, and for apps whose module is
-## missing GTK/Qt just log a warning and fall back to their default — the
-## env override never breaks plain (Latin, dead-key) input.
+## module the toolkits load. The module must be inside the app's sandbox and
+## runtimes differ: the GNOME runtime ships it for GTK3 and GTK4, the
+## freedesktop runtime only for GTK3. Apps whose runtime lacks it log a
+## warning and fall back to their default input handling — the env override
+## never breaks plain (Latin, dead-key) input. See the README for the
+## per-app `GTK_IM_MODULE=simple` fallback.
 ##
-## NOTE: this must stay AFTER the desktop-environment cleanup below. It is
-## placed inside the cross-desktop applications transaction on purpose:
-## fcitx5-configtool depends on KDE Frameworks (kf6-*) packages, which the
-## cleanup's broad `kf6-`/`kde` removal patterns would otherwise strip again,
-## leaving fcitx5-configtool broken.
+## NOTE: this must stay AFTER the desktop-environment cleanup ABOVE. It is
+## placed inside the cross-desktop applications transaction on purpose.
+## fcitx5-configtool links against two small KDE Frameworks libraries
+## (libKF6ItemViews, libKF6WidgetsAddons), and the cleanup's broad `kf6-`
+## pattern matches the packages providing them. Removing those drags
+## fcitx5-configtool out with them, so installing it here (after the cleanup)
+## is what keeps the configuration GUI on the image.
 
 ### Install selected cross-desktop applications
 ##
@@ -371,6 +382,52 @@ if [[ -n "${debloat_pkgs// /}" ]]; then
     dnf5 -y --setopt=install_weak_deps=False remove ${debloat_pkgs}
 else
     echo "Debloat: nothing from the removal set is installed; skipping"
+fi
+
+### Verify the input-method stack survived every removal
+##
+## The fcitx5 stack is installed in the transaction above, and the debloat
+## right above this then drops another batch of packages. dnf removal drags
+## out dependents too, so one wrong entry in a removal list would silently
+## take the input method with it and bring the dead-key bug straight back.
+## Fail the build instead:
+##
+##   1. fcitx5 and its toolkit modules have to be installed - without them
+##      GTK/Qt have nothing to compose with (the whole point of the section
+##      above), and
+##   2. fcitx5-config-qt has to be present - the GUI the README tells users to
+##      open to pick layouts and engines, and
+##   3. the bare `vi` has to survive the vim debloat (vim-minimal + vim-data),
+##      and
+##   4. ibus has to actually be GONE - one input-method framework only, so a
+##      future base image that grows an ibus autostart cannot race fcitx5.
+
+for im_pkg in fcitx5 fcitx5-gtk fcitx5-qt fcitx5-configtool; do
+    if ! rpm -q "${im_pkg}" >/dev/null 2>&1; then
+        echo "input-method package '${im_pkg}' is missing after the removal steps" >&2
+        exit 1
+    fi
+done
+
+if [[ ! -e /usr/bin/fcitx5-config-qt ]]; then
+    echo "fcitx5-config-qt is missing (fcitx5-configtool incomplete)" >&2
+    exit 1
+fi
+
+if [[ ! -e /usr/lib64/gtk-4.0/4.0.0/immodules/libim-fcitx5.so ]] \
+    || [[ ! -e /usr/lib64/qt6/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so ]]; then
+    echo "a fcitx5 toolkit input-context module is missing (GTK4/Qt6)" >&2
+    exit 1
+fi
+
+if ! command -v vi >/dev/null 2>&1; then
+    echo "the bare 'vi' editor is missing after the vim debloat" >&2
+    exit 1
+fi
+
+if rpm -q ibus >/dev/null 2>&1; then
+    echo "ibus is still installed; gregOS standardises on fcitx5 only" >&2
+    exit 1
 fi
 
 # Fail the build if a future greetd package drops either existing PAM hook;

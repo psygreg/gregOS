@@ -96,6 +96,13 @@ match the shipped files, leaving user edits untouched.
   `fcitx5-qt`, `fcitx5-configtool`) and the niri session starts it and exports
   `GTK_IM_MODULE=fcitx`, `QT_IM_MODULE=fcitx`, `XMODIFIERS=@im=fcitx`, so every toolkit composes through
   fcitx5. Keyboard layout / input-method engines are configured with `fcitx5-config-qt`.
+  **One rule to keep in mind:** fcitx5's layout has to match niri's. fcitx5 re-maps keys through its own
+  keymap, and only skips that when its layout equals the compositor's — so if niri's
+  `input { keyboard { xkb { layout … } } }` says one thing and fcitx5's profile says another, the accents
+  come out wrong or not at all. Set both to the same layout (e.g. `us-intl` in niri and *Keyboard - English
+  (US, intl., with dead keys)* in `fcitx5-config-qt`). This is also why the shipped niri config leaves the
+  layout unset: it is a per-user choice, and fcitx5's own default (`keyboard-us`) has no dead keys to speak
+  of.
 - **Full input-method (IME) input is ready out of the box.** The engine set for the locales that need real
   IME is pre-installed — Japanese (`fcitx5-mozc`, with `fcitx5-anthy` as a lighter fallback),
   Simplified/Traditional Chinese (`fcitx5-chinese-addons`), Korean (`fcitx5-hangul`), Thai
@@ -106,8 +113,13 @@ match the shipped files, leaving user edits untouched.
   toggle (usually `Ctrl+Space`).
   Flatpak support is automatic: the image ships a system-wide override (`/etc/flatpak/overrides/global`)
   that injects the same IM environment into every Flatpak. It only selects which input-context module the
-  toolkits load — runtimes that ship the fcitx module (the freedesktop runtime does) compose through fcitx5,
-  others log a warning and keep their default input handling, so plain Latin/dead-key input is never broken.
+  toolkits load, and how much it helps depends on the app's runtime — the fcitx module has to be *inside*
+  the sandbox, and runtimes differ: the GNOME runtime ships it for GTK3 **and** GTK4, the freedesktop
+  runtime only for GTK3. So GTK4 apps on the freedesktop runtime, and Qt apps in general, have no fcitx
+  module to load and get their default input handling back (a warning in the log, plain Latin input still
+  fine). For such an app where dead keys specifically matter, override it alone with GTK's built-in
+  composer, which is compiled into every GTK build:
+  `flatpak override --user --env=GTK_IM_MODULE=simple <app-id>`.
   One known gap: Chromium/Electron apps need `--enable-wayland-ime` on their command line (e.g. via
   `~/.config/chromium-flags.conf` or the app's own flags file) to take part in the Wayland input-method path.
   Note that existing homes with a user-modified niri `config.kdl` keep that file, so those users need to
@@ -144,58 +156,6 @@ selection and uses hardware acceleration. The wrapper only guarantees that the *
 appears. It can be tuned or pinned for debugging through environment variables documented at the top of the
 wrapper (e.g. `GREGOS_GREETER_RENDERER=gles2` to force hardware, or `GREGOS_GREETER_MAX_ATTEMPTS`).
 
-
-# Console keymap and the disk-encryption prompt
-
-The LUKS passphrase prompt runs **inside the initramfs**, long before the installed system's files are
-available. So the console keymap has to be present *there*, or keystrokes at the prompt do not map to the
-characters you expect and the passphrase can never be entered correctly — the machine looks like "the
-keyboard is broken at the encryption prompt" and is effectively unbootable.
-
-The initramfs ships everything needed to *load* a keymap (`loadkeys`, all `kbd` keymaps,
-`systemd-vconsole-setup`), but **nothing tells it which keymap to load** unless `KEYMAP` is set. dracut's
-`i18n` module reads `/etc/vconsole.conf` at image-build time and embeds it into the initramfs; when that
-file is absent it silently leaves `KEYMAP` unset. That is exactly what this image originally shipped, which
-is why the encryption prompt was untypeable.
-
-gregos fixes this three ways, all driven by a single variable in
-[build_files/build.sh](./build_files/build.sh):
-
-```bash
-GREGOS_CONSOLE_KEYMAP="br-abnt2"          # <- set this to your keyboard layout
-GREGOS_CONSOLE_FONT="latarcyrheb-sun16"
-```
-
-1. **`/etc/vconsole.conf`** is written with the chosen `KEYMAP`/`FONT`, so the running system's console
-   matches too.
-2. **The initramfs is regenerated** at the very end of the build using the *same* dracut flags the Bazzite
-   base used (`--no-hostonly --kver … --reproducible --zstd --add ostree --add fido2 -f`), so the keymap is
-   baked in. The resulting dracut module set is unchanged (verified identical — `i18n`, `crypt`,
-   `systemd-cryptsetup`, `plymouth`, `drm` all still present); only the keymap configuration is added. The
-   build **fails** if the keymap did not actually land in the initramfs, so this regression cannot silently
-   return.
-3. **`rd.vconsole.keymap` / `rd.vconsole.font`** are added through bootc's
-   `/usr/lib/bootc/kargs.d/10-gregos-vconsole.toml`. dracut's `parse-i18n.sh` turns these into
-   `/etc/vconsole.conf` *inside the initramfs*. Because the command line wins over the baked-in value, you
-   can change the layout at the boot loader without rebuilding anything.
-
-### Changing the keyboard layout
-
-Pick the layout that matches the physical keyboard you type the passphrase on. List the installed layouts
-with `ls /usr/lib/kbd/keymaps/legacy/i386/qwerty/` (common ones: `br-abnt2`, `br-abnt`, `br-latin1-abnt2`,
-`us`, `pt-latin1`, `uk`, `de-latin1`). Change `GREGOS_CONSOLE_KEYMAP` in `build_files/build.sh`, rebuild.
-
-### Recovering a machine stuck at the passphrase prompt
-
-If you are already stuck, you do not need to rebuild anything. At the GRUB menu press **`e`**, append the
-following to the `linux` line, then press **Ctrl+X** to boot:
-
-```
-rd.vconsole.keymap=br-abnt2
-```
-
-Substitute your own layout. This is read by the initramfs immediately and makes the prompt typeable for that
-boot; then rebuild and rebase to make it permanent.
 
 # Swap: zswap instead of zram
 
