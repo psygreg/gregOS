@@ -45,9 +45,7 @@ environment with a tiling-compositor setup:
   `gnome-keyring-pam` greetd integration and `seahorse` to manage it), GNOME Disks
   (`gnome-disk-utility`), Showtime (`showtime`), and KDE Connect (`kde-connect`). Nautilus thumbnails
   images via the `glycin-loaders` thumbnailers shipped by the base image (kept through the desktop
-  cleanup) and videos via `ffmpegthumbnailer`. See
-  [Credential storage](#credential-storage-gnome-keyring-is-the-only-secret-service) for why the
-  KWallet stack from the base image is removed.
+  cleanup) and videos via `ffmpegthumbnailer`.
 - **Heroic Games Launcher instead of Lutris** — Lutris is removed; [Heroic](https://heroicgameslauncher.com)
   is installed at build time from the `.rpm` asset of its latest GitHub release — so every (daily) image
   build automatically picks up the newest version.
@@ -128,7 +126,6 @@ match the shipped files, leaving user edits untouched.
   Note that existing homes with a user-modified niri `config.kdl` keep that file, so those users need to
   apply the same `environment` and `spawn-at-startup` changes by hand.
 
-
 # Credential storage: one supervised GNOME Keyring
 
 Applications such as Zed keep their tokens in the freedesktop Secret Service (libsecret), so two things
@@ -161,24 +158,6 @@ gregOS therefore runs the keyring as a **supervised session service**:
   (Fedora ships the gcr-3 prompter as `gcr3`; `gcr4` does not provide it.)
 - `seahorse` is installed as the keyring's management UI — the place to inspect the `login` keyring,
   change its password, or fix a wrong one.
-- The KDE credential stack shipped by the base image (`kf6-kwallet` → `ksecretd`, `pam-kwallet`, …) is
-  removed along with its D-Bus/portal/autostart leftovers. It is a second `org.freedesktop.secrets`
-  implementation whose wallet cannot be unlocked at login here at all (`pam_kwallet5` only runs inside a
-  Plasma session), and `[KSecretD] Enabled=false` in `system_files/etc/xdg/kwalletrc` (seeded into user
-  homes) keeps it from ever claiming the bus again. The build fails if any of it comes back.
-
-## If an app still asks for a keyring password
-
-- If the password it wants is your **login** password: it is the login keyring asking, and the password is
-  the one you sign in with. Check with `seahorse` that the `login` keyring exists and uses that password.
-- If your logins were stored in the older KWallet wallet (`kdewallet.kwl` under `~/.local/share/kwalletd/`)
-  from a previous image, they are not in the keyring. Import them once:
-
-  ```bash
-  printf '%s\n' "your wallet password" | gregos-kwallet-import   # --dry-run lists first
-  ```
-
-  then restart the app (or log out and in) so it re-reads its credentials.
 
 # Why a render wrapper
 

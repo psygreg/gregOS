@@ -526,12 +526,6 @@ if ! grep -q '^ListenStream=%t/keyring/control$' /usr/lib/systemd/user/gnome-key
     exit 1
 fi
 
-if [[ ! -f /usr/share/xdg-desktop-portal/gnome-keyring.portal ]] \
-    || ! grep -q '^DBusName=org.freedesktop.secrets$' /usr/share/xdg-desktop-portal/gnome-keyring.portal; then
-    echo "the Secret portal is not mapped to the keyring" >&2
-    exit 1
-fi
-
 # Fail the build if a future greetd package drops either existing PAM hook;
 # installing the module alone would then no longer unlock/start the keyring.
 if ! grep -Eq '^-?auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so([[:space:]]|$)' /etc/pam.d/greetd \
