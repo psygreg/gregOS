@@ -252,6 +252,7 @@ dnf5 install -y \
     nautilus \
     gnome-keyring \
     gnome-keyring-pam \
+    seahorse \
     gnome-disk-utility \
     gnome-calculator \
     gnome-text-editor \
@@ -384,6 +385,14 @@ else
     echo "Debloat: nothing from the removal set is installed; skipping"
 fi
 
+# The two removal passes above are the only ones that may touch credential
+# storage; make sure neither of them dragged seahorse out with the GNOME apps
+# (it is the only management UI for the keyring this image ships).
+if ! rpm -q seahorse >/dev/null 2>&1; then
+    echo "seahorse (the GNOME Keyring manager) was removed with the desktop packages" >&2
+    exit 1
+fi
+
 ### Verify the input-method stack survived every removal
 ##
 ## The fcitx5 stack is installed in the transaction above, and the debloat
@@ -427,6 +436,99 @@ fi
 
 if rpm -q ibus >/dev/null 2>&1; then
     echo "ibus is still installed; gregOS standardises on fcitx5 only" >&2
+    exit 1
+fi
+
+### Credential storage: one supervised GNOME Keyring
+##
+## Applications such as Zed store their tokens through the freedesktop Secret
+## Service (libsecret). Two things have to hold for them to stay silent:
+##
+##   1. org.freedesktop.secrets must be owned by gnome-keyring, and
+##   2. that daemon must be the one that received the login password - the one
+##      pam_gnome_keyring started and unlocked during the greetd PAM session.
+##
+## Measured on a real gregOS install, (2) is what breaks, and it breaks in two
+## steps:
+##
+##   a. pam's gnome-keyring-daemon is an unsupervised child of the PAM session
+##      (exec'd as "gnome-keyring-daemon --daemonize", no --control-directory,
+##      no systemd unit - the packaged unit is disabled). When it dies - and it
+##      does - the login keyring's unlock state dies with it. Nothing restarts
+##      it and nothing re-supplies the password.
+##   b. The next client activates org.freedesktop.secrets, which starts a FRESH
+##      daemon with no password (the D-Bus activation line is just
+##      "gnome-keyring-daemon --start --components=secrets"). That daemon has
+##      no way to know the login password, so the login keyring stays locked and
+##      every app that needs a secret shows an unlock prompt - exactly the
+##      "auth is not passed to the keyring" symptom.
+##
+## The daemon also crashes outright in the Secret Service OpenSession path
+## ("gkd_secret_service_get_pkcs11_session: assertion 'client' failed",
+## "aes_negotiate: assertion 'session' failed", SIGABRT), which is what makes
+## (a) happen mid-session; Fedora's gnome-keyring is 50.x and upstream 51.0
+## carries fixes for exactly these crashes.
+##
+## So the fix is to make the keyring a real, supervised, password-carrying
+## session service:
+##
+##   - enable gnome-keyring-daemon.socket + .service (they ship with
+##     gnome-keyring). The unit runs the daemon under the systemd user manager
+##     with --control-directory=%t/keyring and Restart=on-failure, so a crash
+##     brings it back instead of leaving a dead control socket behind.
+##   - keep gcr3's gcr-prompter available: it is the dialog gnome-keyring uses
+##     when a prompt really is needed. Fedora ships it as "gcr3" (gcr4 is a
+##     different package and does not provide it).
+##   - drop the KDE credential stack's leftovers so nothing can ever claim
+##     org.freedesktop.secrets behind the keyring's back, and keep its files
+##     from coming back (see the assertions below).
+##   - ship kwalletrc with [KSecretD] Enabled=false, the switch KDE documents
+##     for "use another Secret Service provider", as belt and braces.
+
+# --- 1. supervise the keyring ------------------------------------------------
+#
+# gnome-keyring ships gnome-keyring-daemon.{service,socket} but leaves them
+# disabled, so the only daemon that ever runs is the unsupervised one
+# pam_gnome_keyring forked (or a D-Bus-activated one that never receives the
+# login password). Enable the units for every user exactly the way
+# `systemctl --user enable` would: the units' own [Install] sections put the
+# socket in sockets.target and the service in default.target (with Also= the
+# socket).
+#
+# The socket listens on %t/keyring/control - the same control path
+# pam_gnome_keyring talks to - so the PAM hooks and the systemd-managed daemon
+# are one and the same daemon, and Restart=on-failure brings it back after the
+# Secret Service crash instead of leaving a dead socket and a locked keyring.
+
+mkdir -p /usr/lib/systemd/user/sockets.target.wants \
+         /usr/lib/systemd/user/default.target.wants \
+         /usr/lib/systemd/user/gnome-keyring-daemon.service.wants
+ln -sfn /usr/lib/systemd/user/gnome-keyring-daemon.socket \
+    /usr/lib/systemd/user/sockets.target.wants/gnome-keyring-daemon.socket
+ln -sfn /usr/lib/systemd/user/gnome-keyring-daemon.service \
+    /usr/lib/systemd/user/default.target.wants/gnome-keyring-daemon.service
+ln -sfn /usr/lib/systemd/user/gnome-keyring-daemon.socket \
+    /usr/lib/systemd/user/gnome-keyring-daemon.service.wants/gnome-keyring-daemon.socket
+
+# --- 2. assert the keyring is supervised ------------------------------------
+
+if [[ ! -e /usr/lib/systemd/user/sockets.target.wants/gnome-keyring-daemon.socket ]] \
+    || [[ ! -e /usr/lib/systemd/user/default.target.wants/gnome-keyring-daemon.service ]]; then
+    echo "gnome-keyring-daemon is not enabled for the user session" >&2
+    exit 1
+fi
+
+# The socket must be the single place the daemon keeps its control socket, so
+# it matches the path pam_gnome_keyring connects to (it checks that path and
+# GKD_CONTROL_OP_UNLOCK is how the login password reaches a running daemon).
+if ! grep -q '^ListenStream=%t/keyring/control$' /usr/lib/systemd/user/gnome-keyring-daemon.socket; then
+    echo "gnome-keyring-daemon.socket no longer listens on the PAM control path" >&2
+    exit 1
+fi
+
+if [[ ! -f /usr/share/xdg-desktop-portal/gnome-keyring.portal ]] \
+    || ! grep -q '^DBusName=org.freedesktop.secrets$' /usr/share/xdg-desktop-portal/gnome-keyring.portal; then
+    echo "the Secret portal is not mapped to the keyring" >&2
     exit 1
 fi
 

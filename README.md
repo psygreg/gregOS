@@ -42,9 +42,12 @@ environment with a tiling-compositor setup:
   centered on LinuxToys instead. **Bold Brew** (Bazzite's Homebrew TUI, `bbrew`) is removed for the same
   reason: LinuxToys already covers package management.
 - **Selected cross-desktop apps** — Nautilus (`nautilus`), GNOME Keyring (`gnome-keyring` with its
-  `gnome-keyring-pam` greetd integration), GNOME Disks (`gnome-disk-utility`), Showtime (`showtime`), and
-  KDE Connect (`kde-connect`). Nautilus thumbnails images via the `glycin-loaders` thumbnailers shipped by
-  the base image (kept through the desktop cleanup) and videos via `ffmpegthumbnailer`.
+  `gnome-keyring-pam` greetd integration and `seahorse` to manage it), GNOME Disks
+  (`gnome-disk-utility`), Showtime (`showtime`), and KDE Connect (`kde-connect`). Nautilus thumbnails
+  images via the `glycin-loaders` thumbnailers shipped by the base image (kept through the desktop
+  cleanup) and videos via `ffmpegthumbnailer`. See
+  [Credential storage](#credential-storage-gnome-keyring-is-the-only-secret-service) for why the
+  KWallet stack from the base image is removed.
 - **Heroic Games Launcher instead of Lutris** — Lutris is removed; [Heroic](https://heroicgameslauncher.com)
   is installed at build time from the `.rpm` asset of its latest GitHub release — so every (daily) image
   build automatically picks up the newest version.
@@ -125,6 +128,57 @@ match the shipped files, leaving user edits untouched.
   Note that existing homes with a user-modified niri `config.kdl` keep that file, so those users need to
   apply the same `environment` and `spawn-at-startup` changes by hand.
 
+
+# Credential storage: one supervised GNOME Keyring
+
+Applications such as Zed keep their tokens in the freedesktop Secret Service (libsecret), so two things
+have to hold for them to stay quiet: `org.freedesktop.secrets` must be served by **GNOME Keyring**, and
+the daemon serving it has to be the one that got your login password — the one `pam_gnome_keyring` starts
+and unlocks while the greetd PAM session runs.
+
+On a stock image that second part breaks, and it breaks the way you described: the login is typed, then
+later an app asks for a keyring password anyway. The sequence is:
+
+1. `pam_gnome_keyring` starts `gnome-keyring-daemon --daemonize` and unlocks the login keyring. That
+   daemon is an unsupervised child of the PAM session — the packaged `gnome-keyring-daemon.service` is
+   disabled — so when it exits, the unlock state goes with it and nothing brings it back.
+2. The next app touches the Secret Service, which D-Bus-activates `org.freedesktop.secrets` and starts a
+   **fresh** daemon with no password. A new daemon cannot know your login password, so the login keyring
+   stays locked and every app that needs a secret prompts for one.
+
+The daemon also crashes outright in that path (`gkd_secret_service_get_pkcs11_session: assertion 'client'
+failed`, `aes_negotiate: assertion 'session' failed`, `SIGABRT`), which is what kills the first daemon in
+the middle of a session. Fedora ships `gnome-keyring` 50.x; upstream 51.0 contains fixes for exactly these
+crashes.
+
+gregOS therefore runs the keyring as a **supervised session service**:
+
+- `gnome-keyring-daemon.socket` is enabled for the user session (image-pinned in
+  `build_files/build.sh`). The daemon then runs under the systemd user manager with
+  `--control-directory=%t/keyring` and `Restart=on-failure`, so a crash brings it back instead of leaving
+  a dead control socket and a locked keyring behind.
+- `gcr3` is pinned for `gcr-prompter`, the dialog gnome-keyring uses when a prompt really is needed.
+  (Fedora ships the gcr-3 prompter as `gcr3`; `gcr4` does not provide it.)
+- `seahorse` is installed as the keyring's management UI — the place to inspect the `login` keyring,
+  change its password, or fix a wrong one.
+- The KDE credential stack shipped by the base image (`kf6-kwallet` → `ksecretd`, `pam-kwallet`, …) is
+  removed along with its D-Bus/portal/autostart leftovers. It is a second `org.freedesktop.secrets`
+  implementation whose wallet cannot be unlocked at login here at all (`pam_kwallet5` only runs inside a
+  Plasma session), and `[KSecretD] Enabled=false` in `system_files/etc/xdg/kwalletrc` (seeded into user
+  homes) keeps it from ever claiming the bus again. The build fails if any of it comes back.
+
+## If an app still asks for a keyring password
+
+- If the password it wants is your **login** password: it is the login keyring asking, and the password is
+  the one you sign in with. Check with `seahorse` that the `login` keyring exists and uses that password.
+- If your logins were stored in the older KWallet wallet (`kdewallet.kwl` under `~/.local/share/kwalletd/`)
+  from a previous image, they are not in the keyring. Import them once:
+
+  ```bash
+  printf '%s\n' "your wallet password" | gregos-kwallet-import   # --dry-run lists first
+  ```
+
+  then restart the app (or log out and in) so it re-reads its credentials.
 
 # Why a render wrapper
 
