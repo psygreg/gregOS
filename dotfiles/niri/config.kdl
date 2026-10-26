@@ -6,16 +6,20 @@ window-rule {
   clip-to-geometry true
 }
 
-// Floating Noctalia settings window. Its size is generated per display in
-// gregos-display.kdl (see below).
+// Floating Noctalia settings window. Proportions (1080x920 on 2560x1440) size it
+// against the screen it opens on, so it works at any resolution and on any
+// display of a multi-monitor setup. Override with a window-rule placed after the
+// include line below.
 window-rule {
   match app-id="dev.noctalia.Noctalia"
   open-floating true
+  default-column-width { proportion 0.421875; }
+  default-window-height { proportion 0.6388889; }
 }
 
-// Per-display settings (native resolution at the highest refresh rate, and the
-// settings window size), generated at session start by gregos-niri-display-setup.
-// Optional: niri starts normally until the file exists.
+// Per-display settings (native resolution at the highest refresh rate),
+// generated at session start by gregos-niri-display-setup. Optional: niri
+// starts normally until the file exists.
 include optional=true "~/.config/niri/gregos-display.kdl"
 
 debug {

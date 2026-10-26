@@ -80,12 +80,13 @@ match the shipped files, leaving user edits untouched.
   window switcher), volume/brightness keys, screenshot binds, and the `noctalia-backdrop` layer rule.
 - **Displays are detected at login.** `gregos-niri-display-setup` (started by `spawn-at-startup`) asks niri for
   each output's modes and sets it to its native resolution at the highest refresh rate it supports, so a 144 Hz
-  monitor runs at 144 Hz without any configuration. The result is written to `~/.config/niri/gregos-display.kdl`,
-  which is regenerated on every login and only rewritten when it changes. The Noctalia settings window is sized
-  from the screen (1080x920 on a 2560x1440 display, scaled proportionally elsewhere). To override a display, declare
-  `output "NAME" { mode "WIDTHxHEIGHT@REFRESH"; }` in your `~/.config/niri/config.kdl`; the setup script leaves
-  that output alone. To change the settings window size, add a `window-rule` below the `include` line in your
-  `config.kdl`.
+  monitor runs at 144 Hz without any configuration. Every connected output is handled this way, so multi-monitor
+  setups work too. The result is written to `~/.config/niri/gregos-display.kdl`, which is regenerated on every
+  login and only rewritten when it changes. To override a display, declare `output "NAME" { mode "WIDTHxHEIGHT@REFRESH"; }`
+  in your `~/.config/niri/config.kdl`; the setup script leaves that output alone.
+- The Noctalia settings window opens floating at a proportion of the screen it appears on (1080x920 on a
+  2560x1440 display), so it is correctly sized at any resolution and on any display of a multi-monitor setup.
+  To change its size, add a `window-rule` below the `include` line in your `config.kdl`.
 - Noctalia starts automatically with the session (`spawn-at-startup "noctalia"`).
 - Portals: `xdg-desktop-portal-gtk` + `xdg-desktop-portal-gnome` (niri's screencast path), per niri/Noctalia
   recommendations. Xwayland apps run through `xwayland-satellite`, which is a dependency of the Fedora niri
