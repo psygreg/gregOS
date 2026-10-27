@@ -1,10 +1,6 @@
-# Allow build scripts to be referenced without being copied into the final image
-FROM scratch AS ctx
-COPY build_files /
-COPY system_files /system_files
-COPY dotfiles /dotfiles
-
-# Base Image
+# Base Image ARG — MUST come before any FROM instruction. An ARG placed after
+# a FROM is scoped to that stage only and would be invisible to the FROM below
+# (this failed in CI with "no FROM statement found").
 ##
 ## Selected with the BASE_IMAGE build argument. The default is the standard
 ## AMD/Intel image; the NVIDIA variants come from the same Bazzite project:
@@ -14,12 +10,24 @@ COPY dotfiles /dotfiles
 ## (shader cache variable, wayland compositor application profile) when the
 ## base is an NVIDIA image.
 ARG BASE_IMAGE=ghcr.io/ublue-os/bazzite:stable
+
+# Allow build scripts to be referenced without being copied into the final image
+##
+## Declared BEFORE the base stage on purpose: stages build in declaration
+## order, and the base stage's build.sh step bind-mounts this ctx stage
+## (type=bind,from=ctx). A stage referenced by a mount must already exist.
+FROM scratch AS ctx
+COPY build_files /
+COPY system_files /system_files
+COPY dotfiles /dotfiles
+
+# Base Image
 FROM ${BASE_IMAGE}
 ## Other possible base images include:
 # FROM ghcr.io/ublue-os/bazzite:testing
 # FROM ghcr.io/ublue-os/aurora:stable
 # FROM ghcr.io/ublue-os/bluefin-nvidia-open:stable
-# 
+#
 # ... and so on, here are more base images
 # Universal Blue Images: https://github.com/orgs/ublue-os/packages
 # Fedora base image: quay.io/fedora/fedora-bootc:44
