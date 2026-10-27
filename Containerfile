@@ -5,7 +5,16 @@ COPY system_files /system_files
 COPY dotfiles /dotfiles
 
 # Base Image
-FROM ghcr.io/ublue-os/bazzite:stable
+##
+## Selected with the BASE_IMAGE build argument. The default is the standard
+## AMD/Intel image; the NVIDIA variants come from the same Bazzite project:
+##   ghcr.io/ublue-os/bazzite-nvidia:stable       (proprietary driver)
+##   ghcr.io/ublue-os/bazzite-nvidia-open:stable  (open kernel modules)
+## build.sh reads BASE_IMAGE and applies the NVIDIA-specific configuration
+## (shader cache variable, wayland compositor application profile) when the
+## base is an NVIDIA image.
+ARG BASE_IMAGE=ghcr.io/ublue-os/bazzite:stable
+FROM ${BASE_IMAGE}
 ## Other possible base images include:
 # FROM ghcr.io/ublue-os/bazzite:testing
 # FROM ghcr.io/ublue-os/aurora:stable
@@ -31,12 +40,15 @@ FROM ghcr.io/ublue-os/bazzite:stable
 ## make modifications desired in your image and install packages by modifying the build.sh script
 ## the following RUN directive does all the things required to run "build.sh" as recommended.
 
+# Re-declare BASE_IMAGE so it is visible past the FROM above, and hand it to
+# build.sh as an environment variable so it can apply GPU-variant tweaks.
+ARG BASE_IMAGE=ghcr.io/ublue-os/bazzite:stable
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
     --mount=type=secret,id=GITHUB_TOKEN \
     --mount=type=tmpfs,dst=/tmp \
-    /ctx/build.sh
+    BASE_IMAGE="${BASE_IMAGE}" /ctx/build.sh
 
 ### LINTING
 ## Verify final image and contents are correct.

@@ -9,6 +9,10 @@ export image_logo_url := env_var("IMAGE_LOGO_URL")
 export default_tag := env_var("DEFAULT_TAG")
 export bib_image := env_var("BIB_IMAGE")
 
+# Base image for the container build. The default is the standard Bazzite
+# image; the build.yml matrix overrides it for the NVIDIA variants.
+export base_image := env_var_or_default("BASE_IMAGE", "ghcr.io/ublue-os/bazzite:stable")
+
 alias build-vm := build-qcow2
 alias rebuild-vm := rebuild-qcow2
 alias run-vm := run-vm-qcow2
@@ -122,7 +126,7 @@ build $target_image=image_name $tag=default_tag:
     LABELS+=("--label" "org.opencontainers.image.vendor={{ repo_organization }}")
 
     # This actually builds the image!
-    PODMAN_BUILD_ARGS=("${BUILD_ARGS[@]}" "${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile)
+    PODMAN_BUILD_ARGS=("${BUILD_ARGS[@]}" "${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile --build-arg BASE_IMAGE={{ base_image }})
 
     # Pass the GitHub API token through to the build (used by build.sh when
     # fetching release assets). Builds without it fall back to anonymous

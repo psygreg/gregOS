@@ -17,13 +17,31 @@ env:
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ strategy.job-index }}
   cancel-in-progress: true
 
 jobs:
   build_push:
-    name: Build and push image
+    name: Build and push image (${{ matrix.image_name }})
     runs-on: ubuntu-26.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per published image. NVIDIA bases are the same Bazzite
+        # project; build.sh applies the NVIDIA-specific configuration when
+        # BASE_IMAGE includes "nvidia" in its name.
+        include:
+          - image_name: "gregOS"
+            base_image: "ghcr.io/ublue-os/bazzite:stable"
+          - image_name: "gregOS-nvidia"
+            base_image: "ghcr.io/ublue-os/bazzite-nvidia:stable"
+          - image_name: "gregOS-nvidia-open"
+            base_image: "ghcr.io/ublue-os/bazzite-nvidia-open:stable"
+
+    env:
+      IMAGE_NAME: ${{ matrix.image_name }}
+      BASE_IMAGE: ${{ matrix.base_image }}
 
     permissions:
       contents: read

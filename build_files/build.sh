@@ -541,6 +541,79 @@ fi
 
 cp -avf "/ctx/system_files"/. /
 
+### GPU-variant configuration
+##
+## The image is built from one of three Bazzite bases, selected with the
+## BASE_IMAGE build argument (wired through the Containerfile and Justfile,
+## and set per-matrix-entry in build.yml):
+##
+##   ghcr.io/ublue-os/bazzite:stable            standard AMD/Intel image
+##   ghcr.io/ublue-os/bazzite-nvidia:stable     proprietary NVIDIA driver
+##   ghcr.io/ublue-os/bazzite-nvidia-open:stable open NVIDIA kernel modules
+##
+## Everything else in this script is identical for all three; only the
+## shader-cache drop-in differs (Mesa vs the NVIDIA driver read different
+## variables), and only the NVIDIA images need the "limit free buffer pool"
+## application profile for niri. Detection is by base-image name so each
+## variant stays reproducible and cannot be guessed wrong from the runtime
+## package set.
+
+# __GL_SHADER_DISK_CACHE_SIZE is documented in bytes, so 10 GB is spelled out
+# exactly; the Mesa default below accepts the "10G" suffix shorthand.
+shader_cache_line="DefaultEnvironment=MESA_SHADER_CACHE_MAX_SIZE=10G"
+shader_cache_comment="# gregOS: cap Mesa's on-disk compiled-shader cache at ~10 GB"
+
+if [[ "${BASE_IMAGE:-}" == *nvidia* ]]; then
+    echo "NVIDIA base image detected (${BASE_IMAGE}): applying NVIDIA configuration"
+
+    shader_cache_line="DefaultEnvironment=__GL_SHADER_DISK_CACHE_SIZE=10737418240"
+    shader_cache_comment="# gregOS: cap the NVIDIA driver's on-disk shader cache at ~10 GB"
+
+    # NVIDIA's wayland fix for compositors: bound the free-buffer pool so
+    # niri behaves with the driver's GL stack (upstream-recommended profile,
+    # keyed on the compositor's process name). The directory is created by
+    # the nvidia driver packages, but mkdir keeps this self-contained.
+    mkdir -p /etc/nvidia/nvidia-application-profiles-rc.d
+    cat > /etc/nvidia/nvidia-application-profiles-rc.d/50-limit-free-buffer-pool-in-wayland-compositors.json <<'EOF'
+{
+    "rules": [
+        {
+            "pattern": {
+                "feature": "procname",
+                "matches": "niri"
+            },
+            "profile": "Limit Free Buffer Pool On Wayland Compositors"
+        }
+    ],
+    "profiles": [
+        {
+            "name": "Limit Free Buffer Pool On Wayland Compositors",
+            "settings": [
+                {
+                    "key": "GLVidHeapReuseRatio",
+                    "value": 0
+                }
+            ]
+        }
+    ]
+}
+EOF
+fi
+
+# Rewrite the shipped drop-in with the variant-correct variable. It is
+# propagated through systemd's DefaultEnvironment, so every service inherits
+# it - including greetd -> the Noctalia greeter -> the niri session -> every
+# app launched inside it.
+cat > /usr/lib/systemd/system.conf.d/99-gregos-shader-cache.conf <<EOF
+${shader_cache_comment}
+#
+# Propagated through systemd's DefaultEnvironment, so every service inherits
+# it - including greetd -> the Noctalia greeter -> the niri session -> every
+# app launched inside it.
+${shader_cache_line}
+EOF
+
+
 ### Deploy the shipped niri + Noctalia configuration
 ##
 ##  - /etc/niri/ holds the canonical, image-managed compositor configuration

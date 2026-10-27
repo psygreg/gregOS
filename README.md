@@ -412,6 +412,16 @@ gh secret set SIGNING_SECRET < cosign.key
 To choose a base image, simply modify the line in the container file starting with `FROM`. This will be the image your image derives from, and is your starting point for modifications.
 For a base image, you can choose any of the Universal Blue images or start from a Fedora Atomic system. Below this paragraph is a dropdown with a non-exhaustive list of potential base images.
 
+### NVIDIA variants
+
+Besides the standard image, this repository also builds two NVIDIA variants from Bazzite's NVIDIA bases, published alongside it by the `build.yml` workflow matrix:
+
+- `ghcr.io/psygreg/gregos-nvidia:stable` — from `ghcr.io/ublue-os/bazzite-nvidia:stable` (proprietary driver)
+- `ghcr.io/psygreg/gregos-nvidia-open:stable` — from `ghcr.io/ublue-os/bazzite-nvidia-open:stable` (open kernel modules)
+
+Both use the same build procedure; when the base image name includes `nvidia`, `build_files/build.sh` swaps Mesa's `MESA_SHADER_CACHE_MAX_SIZE` default for the NVIDIA driver's `__GL_SHADER_DISK_CACHE_SIZE` and installs the "Limit Free Buffer Pool On Wayland Compositors" application profile for niri under `/etc/nvidia/nvidia-application-profiles-rc.d/`. The workflow sets `IMAGE_NAME` and `BASE_IMAGE` per matrix entry; for local builds, export `BASE_IMAGE` before calling `just build`, e.g. `BASE_IMAGE=ghcr.io/ublue-os/bazzite-nvidia:stable just build gregos-nvidia latest`.
+
+
 <details>
     <summary>Base Images</summary>
 
