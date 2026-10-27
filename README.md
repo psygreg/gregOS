@@ -4,16 +4,21 @@
 
 ## Usage
 
-To install it, from a running *Bazzite* system:
+Choose one of the available variants:
+- `gregos`: for AMD and Intel graphics cards and integrated graphics
+- `gregos-nvidia`:  for Nvidia Maxwell/Pascal (GT/X 9xx/10xx), GTX 750 and 750Ti series cards
+- `gregos-nvidia-open`: for Nvidia Turing (GTX 16xx and RTX 20xx) series and newer cards
+
+To install it, from any running `bootc`-based Fedora immutable system (recommended *Bazzite*):
 ```bash
-sudo bootc switch ghcr.io/psygreg/gregos:latest
+sudo bootc switch ghcr.io/psygreg/<variant>:latest
 ```
 Then, after a reboot, switch to the signed version of the image:
 ```bash
-sudo bootc switch --enforce-container-sigpolicy ghcr.io/psygreg/gregos:latest
+sudo bootc switch --enforce-container-sigpolicy ghcr.io/psygreg/<variant>:latest
 ```
 
-Then run the post-install script by simply launching *LinuxToys* and following any prompts that show up from it. It will perform all necessary final touch-ups at first launch.
+Then run the quick post-install setup steps by simply launching *LinuxToys* and following any prompts that show up from it. It will perform all necessary final touch-ups at first launch.
 
 # What this image ships
 
@@ -327,6 +332,20 @@ The first `snap` invocation may take a few seconds while snapd seeds the device
   requires `$HOME` to live under `/home`.
 - Snap refreshes and installs update `/var/lib/snapd`, never `/usr`, so they survive image updates and
   rollbacks untouched.
+
+# GnuPG: keyboxd stays disabled
+
+gpg 2.4.1 and newer write `~/.gnupg/common.conf` with an active `use-keyboxd` the first time they run without an existing `~/.gnupg` directory. That moves public keys into keyboxd's own database instead of `pubring.kbx`, and distroboxes, which share `$HOME` with the host, could not verify signing keys from it. gregOS ships `#use-keyboxd` as the content of `common.conf` instead, so gpg keeps the classic keyring:
+
+- `/etc/skel/.gnupg/common.conf` covers new accounts.
+- `gregos-gnupg-config-seed.service` covers existing homes, for root and every regular user, on every boot. It creates a missing `common.conf` and comments out an active `use-keyboxd` line in an existing one. The rest of the file is left alone. Because it runs on every boot, keyboxd cannot stay enabled through `common.conf` on this image.
+
+If you keep keys in keyboxd's database (`~/.gnupg/public-keys.d/pubring.db`), gpg cannot see them once keyboxd is disabled, and it does not migrate them. Export them while `use-keyboxd` is still enabled, then import the file with it disabled. On an image that already disabled it, uncomment the line only for the export:
+
+```bash
+gpg --export --export-options backup > all-keys.gpg    # use-keyboxd enabled
+gpg --import --import-options restore < all-keys.gpg   # use-keyboxd disabled
+```
 
 # image-template README
 

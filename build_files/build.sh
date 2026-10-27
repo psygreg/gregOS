@@ -636,6 +636,29 @@ cp -avf /ctx/dotfiles/noctalia/. /etc/skel/.config/noctalia/
 niri validate -c /etc/niri/config.kdl
 niri validate -c /usr/share/niri/defaults/config.kdl
 
+### GnuPG: keep keyboxd disabled
+##
+## gpg 2.4.1+ writes an active "use-keyboxd" into ~/.gnupg/common.conf the first
+## time it creates a home directory. Keys then live in keyboxd's own database,
+## and distroboxes (which share $HOME with the host) could not verify signing
+## keys with it. The shipped common.conf carries "#use-keyboxd" instead, so gpg
+## keeps using the classic pubring.kbx.
+##
+## /etc/skel covers new accounts; gregos-gnupg-config-seed.service enforces the
+## same setting in every existing home on each boot.
+
+mkdir -p /usr/share/gregos/gnupg
+cp -avf /ctx/dotfiles/gnupg/. /usr/share/gregos/gnupg/
+
+install -d -m 0700 /etc/skel/.gnupg
+install -m 0644 /ctx/dotfiles/gnupg/common.conf /etc/skel/.gnupg/common.conf
+
+# Fail the build if the shipped default ever enables keyboxd again.
+if grep -Eq '^[[:space:]]*use-keyboxd' /usr/share/gregos/gnupg/common.conf; then
+    echo "gregOS must ship keyboxd disabled in common.conf" >&2
+    exit 1
+fi
+
 ### Login manager: greetd + Noctalia Greeter
 ##
 ## Replaces KDE's login manager (plasma-login-manager / SDDM). The greeter
@@ -669,6 +692,7 @@ systemctl enable greetd.service
 ln -sfn /usr/lib/systemd/system/greetd.service /etc/systemd/system/display-manager.service
 
 systemctl enable gregos-niri-config-seed.service
+systemctl enable gregos-gnupg-config-seed.service
 systemctl enable gregos-zswap-setup.service
 
 #### Example for enabling a System Unit File

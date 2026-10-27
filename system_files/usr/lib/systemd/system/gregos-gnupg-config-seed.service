@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep keyboxd disabled in user GnuPG configuration (gregOS)
+Documentation=https://github.com/psygreg/gregOS
+After=local-fs.target
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /usr/libexec/gregos/gnupg-config-seed
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

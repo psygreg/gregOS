@@ -1,0 +1,36 @@
+#!/bin/bash
+# Keeps keyboxd disabled in the GnuPG home of root and every real user. gpg 2.4.1+
+# writes an active "use-keyboxd" into a brand-new ~/.gnupg/common.conf, and
+# distroboxes share $HOME with the host, where keyboxd breaks signing-key
+# verification. A missing common.conf gets the shipped default, and an active
+# "use-keyboxd" line is commented out in place. The rest of the file is kept.
+
+set -euo pipefail
+
+gnupg_src="/usr/share/gregos/gnupg/common.conf"
+keyboxd_line='^[[:space:]]*use-keyboxd[[:space:]]*$'
+
+shopt -s nullglob
+for home in /root /home/*/; do
+    home="${home%/}"
+    [[ -d "${home}" ]] || continue
+    uid="$(stat -L -c '%u' "${home}")"
+    gid="$(stat -L -c '%g' "${home}")"
+
+    # Root and real users only; never touch lost+found or other system leftovers.
+    [[ "${home}" == /root || "${uid}" -ge 1000 ]] || continue
+
+    gnupg_dir="${home}/.gnupg"
+    gnupg_conf="${gnupg_dir}/common.conf"
+    if [[ ! -e "${gnupg_conf}" && ! -L "${gnupg_conf}" ]]; then
+        [[ -d "${gnupg_dir}" ]] || install -d -m 0700 -o "${uid}" -g "${gid}" "${gnupg_dir}"
+        install -m 0644 -o "${uid}" -g "${gid}" "${gnupg_src}" "${gnupg_conf}"
+        echo "gregos-gnupg-config-seed: installed common.conf for ${home}"
+    elif [[ -f "${gnupg_conf}" && ! -L "${gnupg_conf}" ]] && grep -Eq "${keyboxd_line}" "${gnupg_conf}"; then
+        tmp="$(mktemp)"
+        sed -E "s/${keyboxd_line}/#use-keyboxd/" "${gnupg_conf}" > "${tmp}"
+        install -m 0644 -o "${uid}" -g "${gid}" "${tmp}" "${gnupg_conf}"
+        rm -f "${tmp}"
+        echo "gregos-gnupg-config-seed: disabled keyboxd in ${gnupg_conf}"
+    fi
+done
