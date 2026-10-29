@@ -98,6 +98,54 @@ echo "Fetching Heroic: ${heroic_url}"
 dnf5 install -y /tmp/heroic.rpm
 rm -f /tmp/heroic.rpm
 
+### Built-in: latencydevil launcher wrapper on PATH
+##
+## gregOS ships the latencydevil launcher wrapper
+## (https://github.com/psygreg/latencydevil) as an image built-in, next to
+## helpers like the niri display-setup script. It takes a launch command,
+## injects GPU-aware low-latency environment variables in front of it, then
+## execs the command - so games launch as "latencydevil -- %command%" in Steam
+## launch options, or "latencydevil -- <command>" in a terminal (Flatpaks
+## included). That wrapper usage is by name, which is why - unlike the display
+## helper, spawned by niri through its full path - the binary is installed on
+## the system PATH under /usr/local/bin: the locally-administered-software
+## directory on the default PATH of every shell and systemd session, and not
+## owned by any RPM (unlike /usr/bin), so image-shipped tools there never
+## collide with package manager files.
+##
+## There is no package to install: the GitHub release ships a single
+## self-contained binary named "latencydevil". Download it from the latest
+## release the same way LinuxToys and Heroic above are fetched: resolve the
+## current asset through the GitHub API. The GITHUB_TOKEN build secret (wired
+## up in build.yml and the Justfile) authenticates the request in CI to avoid
+## unauthenticated API rate limits; local builds fall back to anonymous
+## access. Daily image builds therefore automatically pick up every new
+## latencydevil release.
+
+# /usr/local/bin is owned by Fedora's `filesystem` package as a real directory
+# and must stay one: if a future base image ever repointed it to a mutable
+# location, the binary would drop out of deployed systems even though the
+# build succeeded (the same /var-not-carried problem as /opt, see the
+# Containerfile note). Fail the build loudly instead.
+if [[ ! -d /usr/local/bin ]] || [[ -L /usr/local/bin ]]; then
+    echo "/usr/local/bin is not an image-owned directory in this base image" >&2
+    exit 1
+fi
+
+latencydevil_url="$(/ctx/ghcurl https://api.github.com/repos/psygreg/latencydevil/releases/latest \
+    | jq -r '.assets[] | select(.name == "latencydevil") | .browser_download_url')"
+echo "Fetching latencydevil: ${latencydevil_url}"
+/ctx/ghcurl "${latencydevil_url}" -o /tmp/latencydevil
+install -m 0755 /tmp/latencydevil /usr/local/bin/latencydevil
+rm -f /tmp/latencydevil
+
+# Fail the build if the binary is not on PATH as an executable - nothing else
+# ships it, and Steam launch options resolve "latencydevil" through PATH only.
+if [[ ! -x /usr/local/bin/latencydevil ]]; then
+    echo "latencydevil is missing from /usr/local/bin after installation" >&2
+    exit 1
+fi
+
 ### Replace zram-generator with zswap
 ##
 ## Swap-on-zram is removed in favor of zswap: the kernel compresses swapped

@@ -22,14 +22,14 @@ Then run the quick post-install setup steps by simply launching *LinuxToys* and 
 
 # What this image ships
 
-This image is based on `ghcr.io/ublue-os/bazzite:stable` (Fedora 44) and replaces the traditional desktop
+This image is based on `ghcr.io/ublue-os/bazzite:stable` and replaces the traditional desktop
 environment with a tiling-compositor setup:
 
 - **[niri](https://github.com/YaLTeu/niri)** - scrollable-tiling Wayland compositor (Fedora package) and all 
   fixes and tweaks needed for it to work as you would expect.
 - **[Noctalia](https://github.com/noctalia-dev/noctalia)** - the desktop shell layered on top of niri: bar,
   launcher, control center, notifications, lock screen, wallpaper, OSDs, clipboard, tray, and its own polkit
-  agent (Fedora package, F44+).
+  agent.
 - **[Noctalia Greeter](https://github.com/noctalia-dev/noctalia-greeter)** + **greetd** - the login screen.
   Sourced from the [Terra](https://terrapkg.com) repository; the repo is used at build time and left disabled
   afterwards, matching how Bazzite itself consumes Terra. The greeter runs as the `greeter` system account
@@ -43,25 +43,31 @@ environment with a tiling-compositor setup:
 - KDE Plasma and GNOME desktop environments are **removed** at build time, along with most of their
   desktop-specific applications (see `REMOVE_PATTERNS` in [build_files/build.sh](./build_files/build.sh)).
   Everything else Bazzite ships is untouched: Steam, gamescope, drivers, ujust, Bazzite Portal, Waydroid,
-  Cockpit, the audio stack, and so on. **Bazaar** is removed as well — software and system management is
-  centered on LinuxToys instead. **Bold Brew** (Bazzite's Homebrew TUI, `bbrew`) is removed for the same
-  reason: LinuxToys already covers package management.
+  Cockpit, the audio stack, and so on. **Bazaar** and **Bold Brew** are removed as well — software and system management is
+  centered on LinuxToys instead.
 - **Selected cross-desktop apps** — Nautilus (`nautilus`), GNOME Keyring (`gnome-keyring` with its
   `gnome-keyring-pam` greetd integration and `seahorse` to manage it), GNOME Disks
   (`gnome-disk-utility`), Showtime (`showtime`), and KDE Connect (`kde-connect`). Nautilus thumbnails
   images via the `glycin-loaders` thumbnailers shipped by the base image (kept through the desktop
   cleanup) and videos via `ffmpegthumbnailer`.
 - **Heroic Games Launcher instead of Lutris** — Lutris is removed; [Heroic](https://heroicgameslauncher.com)
-  is installed at build time from the `.rpm` asset of its latest GitHub release — so every (daily) image
+  is installed at build time from the `.rpm` asset of its latest GitHub release — so every image
   build automatically picks up the newest version.
+- **[`latencydevil`](https://github.com/psygreg/latencydevil) launcher wrapper** — the low-latency helper
+  for competitive gaming is built in and installed on the system `PATH` (`/usr/local/bin/latencydevil`,
+  fetched at build time from its latest GitHub release, so image builds automatically pick up new
+  versions). Prefix any game with `latencydevil -- %command%` in *Steam* launch options — or any terminal
+  or Flatpak command with `latencydevil -- …` — to inject GPU-aware low-latency environment variables in
+  front of it; the wrapper `exec`s into the game, leaving nothing extra in the process tree. Run
+  `latencydevil --print` to see the variables it would apply on this system.
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
-  `.rpm` asset of its latest GitHub release — so every (daily) image build automatically picks up the newest
+  `.rpm` asset of its latest GitHub release — so every image build automatically picks up the newest
   version. It replaces Bazaar as the image's software and system manager. Its well-known optimization tweaks
   are also baked into the image.
 - **zswap instead of zram** — the `zram-generator` packages are removed. Swapped pages are compressed by the
   kernel with `zstd` into a `zsmalloc` pool capped at 25% of RAM (with the shrinker enabled), backed by
   whatever swap device you provide yourself. See [Swap: zswap instead of zram](#swap-zswap-instead-of-zram).
-- **Snap packages (snapd)** — `snapd`, `snapd-selinux` and `squashfuse` are layered on, with the immutable
+- **Snap packages (snapd)** — `snapd`, `snapd-selinux` and `squashfuse` are built in, with the immutable
   system adaptations described in [Snap packages](#snap-packages). Strictly confined and classic-confined
   snaps both work out of the box.
 - **Simpler printer configuration** through `system-config-printer`.
@@ -255,6 +261,8 @@ wrapper (e.g. `GREGOS_GREETER_RENDERER=gles2` to force hardware, or `GREGOS_GREE
 
 
 # Swap: zswap instead of zram
+
+`zram` swaps can be great if you have a large amount of RAM available and won't typically put it under pressure, otherwise, end up causing unwanted out-of-memory events - while those won't freeze the system, instead just crashing whatever process was the *memory hog*, it's clearly desirable to avoid them as much as possible, hence why the choice for `zswap`.
 
 Bazzite's swap-on-zram (`zram-generator`) is removed. Swapped pages are compressed by the kernel's
 [zswap](https://docs.kernel.org/admin-guide/mm/zswap.html) with `zstd` into a `zsmalloc` pool of up to 25% of
