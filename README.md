@@ -70,6 +70,12 @@ environment with a tiling-compositor setup:
 - **Snap packages (snapd)** — `snapd`, `snapd-selinux` and `squashfuse` are built in, with the immutable
   system adaptations described in [Snap packages](#snap-packages). Strictly confined and classic-confined
   snaps both work out of the box.
+- **FlatPark pre-enabled** — the [FlatPark](https://flatpark.org) community Flatpak hub ships as a system
+  remote for every user (`system_files/etc/flatpak/remotes.d/flatpark.flatpakrepo`, the same file-based
+  mechanism the base image uses to pre-enable Flathub). Flathub, which provides the runtimes FlatPark
+  apps run on, is already enabled too. There is no desktop software centre on this image, so apps are
+  installed with the CLI: `flatpak install flatpark <app-id>` (the install command a FlatPark app page
+  offers).
 - **Simpler printer configuration** through `system-config-printer`.
 - **Friendlier terminal shell** and several `zsh` features while remaining on `bash` with a fully implemented
   *[sloth-bash](https://github.com/psygreg/sloth-bash)* - another project of mine.
