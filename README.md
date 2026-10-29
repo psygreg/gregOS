@@ -54,7 +54,7 @@ environment with a tiling-compositor setup:
   is installed at build time from the `.rpm` asset of its latest GitHub release — so every image
   build automatically picks up the newest version.
 - **[`latencydevil`](https://github.com/psygreg/latencydevil) launcher wrapper** — the low-latency helper
-  for competitive gaming is built in and installed on the system `PATH` (`/usr/local/bin/latencydevil`,
+  for competitive gaming is built in and installed on the system `PATH` (`/usr/bin/latencydevil`,
   fetched at build time from its latest GitHub release, so image builds automatically pick up new
   versions). Prefix any game with `latencydevil -- %command%` in *Steam* launch options — or any terminal
   or Flatpak command with `latencydevil -- …` — to inject GPU-aware low-latency environment variables in

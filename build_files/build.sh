@@ -108,10 +108,16 @@ rm -f /tmp/heroic.rpm
 ## launch options, or "latencydevil -- <command>" in a terminal (Flatpaks
 ## included). That wrapper usage is by name, which is why - unlike the display
 ## helper, spawned by niri through its full path - the binary is installed on
-## the system PATH under /usr/local/bin: the locally-administered-software
-## directory on the default PATH of every shell and systemd session, and not
-## owned by any RPM (unlike /usr/bin), so image-shipped tools there never
-## collide with package manager files.
+## the system PATH as an image-owned file in /usr/bin.
+##
+## NOT /usr/local/bin, even though that is upstream's own suggested install
+## location: in this base image /usr/local is a symlink to ../var/usrlocal,
+## and /var content is not carried from the image onto deployed hosts (the
+## same problem as /opt, documented in the Containerfile) - a binary placed
+## there during the build would be gone again after the first deployment.
+## /usr/bin is the usual system path: it ships with the image on every PATH,
+## and on deployed systems it is immutable, so removals and replacements of
+## latencydevil happen through image updates like every other built-in.
 ##
 ## There is no package to install: the GitHub release ships a single
 ## self-contained binary named "latencydevil". Download it from the latest
@@ -122,27 +128,18 @@ rm -f /tmp/heroic.rpm
 ## access. Daily image builds therefore automatically pick up every new
 ## latencydevil release.
 
-# /usr/local/bin is owned by Fedora's `filesystem` package as a real directory
-# and must stay one: if a future base image ever repointed it to a mutable
-# location, the binary would drop out of deployed systems even though the
-# build succeeded (the same /var-not-carried problem as /opt, see the
-# Containerfile note). Fail the build loudly instead.
-if [[ ! -d /usr/local/bin ]] || [[ -L /usr/local/bin ]]; then
-    echo "/usr/local/bin is not an image-owned directory in this base image" >&2
-    exit 1
-fi
-
 latencydevil_url="$(/ctx/ghcurl https://api.github.com/repos/psygreg/latencydevil/releases/latest \
     | jq -r '.assets[] | select(.name == "latencydevil") | .browser_download_url')"
 echo "Fetching latencydevil: ${latencydevil_url}"
 /ctx/ghcurl "${latencydevil_url}" -o /tmp/latencydevil
-install -m 0755 /tmp/latencydevil /usr/local/bin/latencydevil
+install -m 0755 /tmp/latencydevil /usr/bin/latencydevil
 rm -f /tmp/latencydevil
 
-# Fail the build if the binary is not on PATH as an executable - nothing else
-# ships it, and Steam launch options resolve "latencydevil" through PATH only.
-if [[ ! -x /usr/local/bin/latencydevil ]]; then
-    echo "latencydevil is missing from /usr/local/bin after installation" >&2
+# Fail the build if the binary did not land on PATH as an executable - nothing
+# else ships it, and Steam launch options resolve "latencydevil" through PATH
+# only.
+if [[ ! -x /usr/bin/latencydevil ]]; then
+    echo "latencydevil is missing from /usr/bin after installation" >&2
     exit 1
 fi
 
