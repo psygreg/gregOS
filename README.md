@@ -62,8 +62,7 @@ environment with a tiling-compositor setup:
   `latencydevil --print` to see the variables it would apply on this system.
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every image build automatically picks up the newest
-  version. It replaces Bazaar as the image's software and system manager. Its well-known optimization tweaks
-  are also baked into the image.
+  version. It replaces Bazaar and Bold Brew as the image's software and system manager. Its well-known optimization tweaks are also baked into the image.
 - **zswap instead of zram** — the `zram-generator` packages are removed. Swapped pages are compressed by the
   kernel with `zstd` into a `zsmalloc` pool capped at 25% of RAM (with the shrinker enabled), backed by
   whatever swap device you provide yourself. See [Swap: zswap instead of zram](#swap-zswap-instead-of-zram).
@@ -72,10 +71,7 @@ environment with a tiling-compositor setup:
   snaps both work out of the box.
 - **FlatPark pre-enabled** — the [FlatPark](https://flatpark.org) community Flatpak hub ships as a system
   remote for every user (`system_files/etc/flatpak/remotes.d/flatpark.flatpakrepo`, the same file-based
-  mechanism the base image uses to pre-enable Flathub). Flathub, which provides the runtimes FlatPark
-  apps run on, is already enabled too. There is no desktop software centre on this image, so apps are
-  installed with the CLI: `flatpak install flatpark <app-id>` (the install command a FlatPark app page
-  offers).
+  mechanism the base image uses to pre-enable Flathub).
 - **Simpler printer configuration** through `system-config-printer`.
 - **Friendlier terminal shell** and several `zsh` features while remaining on `bash` with a fully implemented
   *[sloth-bash](https://github.com/psygreg/sloth-bash)* - another project of mine.
