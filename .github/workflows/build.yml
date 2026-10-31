@@ -5,7 +5,7 @@ on:
     branches:
       - main
   schedule:
-    - cron: '00 10 * * 6'  # 10:00am UTC every Saturday
+    - cron: "40 4 * * 2"  # 4:40am UTC every Tuesday
   push:
     branches:
       - main
@@ -185,4 +185,3 @@ jobs:
           # https://github.com/coreos/rpm-ostree/issues/5509
           # use old bundle format, so we can use newer cosign 3.X.X instead of 2.X.X
           cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY ${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}
-
