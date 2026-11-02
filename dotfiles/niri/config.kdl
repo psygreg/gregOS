@@ -63,6 +63,8 @@ binds {
     Mod+Shift+W { move-window-to-workspace-up; }
     Mod+F { maximize-column; }
     Mod+F11 { fullscreen-window; }
+    Mod+V { toggle-window-floating; }
+    Mod+C { center-column; }
 
     // 'Roll binds' - navigation
     Mod+WheelScrollDown cooldown-ms=150 { focus-workspace-down; }

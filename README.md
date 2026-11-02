@@ -172,6 +172,8 @@ match the shipped files, leaving user edits untouched.
 | `Mod+Shift+W` / `Mod+Shift+S` | Move window to workspace up / down |
 | `Mod+F` | Maximize column |
 | `Mod+F11` | Fullscreen window |
+| `Mod+V` | Toggle floating mode for focused window |
+| `Mod+C` | Center focused window on display |
 | `Mod+Q` | Close window |
 
 **Mouse wheel**
