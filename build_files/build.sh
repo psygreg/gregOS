@@ -23,7 +23,17 @@ set -ouex pipefail
 ##     repo and leave it disabled again afterwards (the same way Bazzite
 ##     itself consumes Terra packages).
 
-dnf5 install -y \
+## This transaction refreshes DNF's metadata (--refresh) on purpose: the base
+## image carries the repo metadata from ITS OWN build, days older. Without a
+## refresh installs resolve against that stale snapshot: a plain
+## `dnf install noctalia` once resolved to the F45 GA's noctalia 5.3.0, which
+## supports config_version 15, while config settings written by 5.4.x use
+## config_version 16 — every user with an existing Noctalia state file then
+## saw "config_version: version 16 is newer than supported version 15" at
+## login. Resolving against live repo metadata keeps the image on the current
+## updates version, in line with what Fedora supports for the user config.
+
+dnf5 install -y --refresh \
     greetd \
     niri \
     noctalia \
@@ -223,7 +233,7 @@ for just_file in /usr/share/ublue-os/just/*.just; do
 done
 shopt -u nullglob
 
-### Input method: fcitx5
+### Input method: ibus
 ##
 ## GTK 4.20 (GNOME 49+) no longer implements dead-key/X11-style compose
 ## sequences itself on Wayland: it delegates composing to an input-method
@@ -231,38 +241,42 @@ shopt -u nullglob
 ## likewise does no composing. So dead keys only appear in an app when a real
 ## input method is RUNNING and the app is actually talking to it.
 ##
-## Bazzite already ships the complete fcitx5 stack (daemon, the GTK2/3/4 and
-## Qt5/6 input-context modules, and fcitx5-configtool / fcitx5-config-qt) plus
-## the ibus stack. What it does NOT do is wire any of it up: nothing starts an
-## input method and no environment selects one, so the toolkits were left on
-## their built-in, inconsistent fallbacks — some composed dead keys themselves
-## (one reason BlackBox worked while e.g. GNOME Text Editor did not), others
-## got dead keys as plain keysyms and dropped the accents.
+## gregOS previously standardised on fcitx5, but Bazzite dropped the fcitx5
+## stack from its base image over packaging issues upstream. The image now
+## standardises on ibus, which the base ships complete and Fedora maintains:
 ##
-## This section therefore pins the fcitx5 stack explicitly so a future base
-## image cannot silently drop it, and adds the language engines:
+##   ibus                   core daemon + the XKB "keyboard" engines
+##   ibus-gtk3 / ibus-gtk4  input-context modules for GTK3 / GTK4
+##   (Qt5/Qt6 ship their own ibus input-context plugin inside qt6-qtbase)
 ##
-##   fcitx5              core daemon + engine
-##   fcitx5-gtk          input-context modules for GTK2/GTK3/GTK4
-##   fcitx5-qt           input-context modules for Qt5/Qt6
-##   fcitx5-configtool   config GUI (fcitx5-config-qt)
+## This section pins that stack explicitly so a future base image cannot
+## silently drop it, and adds the language engines:
 ##
-## Engine packages are pre-installed so a shipped image covers the locales
-## that need real IME input out of the box. They are inactive by default:
-## fcitx5's default profile only has "keyboard"-type engines, so plain
-## us-intl/other layouts keep composing dead keys by default and the
-## engine only becomes active when the user selects it in fcitx5-config-qt.
+##   ibus-anthy           Japanese (GoogleNotoSansCJK is already installed
+##                        for its glyph needs)
+##   ibus-libpinyin       Simplified Chinese (Pinyin)
+##   ibus-chewing         Traditional Chinese (Bopomofo/Zhuyin)
+##   ibus-hangul          Korean
+##   ibus-m17n            Thai, Vietnamese, Indic and the rest of the m17n
+##                        catalogue
+##   ibus-typing-booster  emoji/unicode prediction, works on any layout
 ##
-##   fcitx5-mozc [...] Japanese (Mozc engine; GoogleNotoSansCJK is already
-##                                       installed for its glyph needs)
-##   fcitx5-chinese-addons [...] Simplified/Traditional Chinese
-##                                       (Pinyin, Bopomofo, Cangjie, Wu)
-##   fcitx5-hangul, fcitx5-libthai, fcitx5-m17n, fcitx5-table-extra [...]
+## ibus can run without any IME configured: its XKB "keyboard" engines
+## (xkb:us:intl:eng and friends, provided by ibus-engine-simple) compose dead
+## keys through ibus itself, so plain us-intl and other Latin layouts keep
+## working out of the box and the IME engines only become active when the
+## user selects one in ibus-setup.
 ##
-## The niri session starts fcitx5 (spawn-at-startup) and exports
-## GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=fcitx (dotfiles/niri/config.kdl), so
-## GTK and Qt apps compose dead keys and accents through fcitx5. Layout and
-## engine settings are user-configurable with the fcitx5-config-qt GUI.
+## The niri session starts ibus-daemon (spawn-at-startup, replace + XIM so
+## Xwayland apps compose too) and exports
+## GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=ibus (dotfiles/niri/config.kdl), so
+## GTK and Qt apps compose dead keys and accents through ibus. Engines are
+## user-configurable with the ibus-setup GUI.
+##
+## To keep dead-key composing identical for every fresh account, system_files
+## carries a dconf system default (/etc/dconf/db/local.d/00-gregos-ibus)
+## preloading the xkb:us:intl keyboard engine, so us-intl composes without
+## any first-run input-method action; users override it in ibus-setup.
 ##
 ## Flatpak apps do not inherit session environment. system_files carries
 ## /etc/flatpak/overrides/global (the system-wide override Flatpak merges for
@@ -274,14 +288,6 @@ shopt -u nullglob
 ## warning and fall back to their default input handling — the env override
 ## never breaks plain (Latin, dead-key) input. See the README for the
 ## per-app `GTK_IM_MODULE=simple` fallback.
-##
-## NOTE: this must stay AFTER the desktop-environment cleanup ABOVE. It is
-## placed inside the cross-desktop applications transaction on purpose.
-## fcitx5-configtool links against two small KDE Frameworks libraries
-## (libKF6ItemViews, libKF6WidgetsAddons), and the cleanup's broad `kf6-`
-## pattern matches the packages providing them. Removing those drags
-## fcitx5-configtool out with them, so installing it here (after the cleanup)
-## is what keeps the configuration GUI on the image.
 
 ### Install selected cross-desktop applications
 ##
@@ -313,17 +319,15 @@ dnf5 install -y \
     kde-connect \
     wlsunset \
     cava \
-    fcitx5 \
-    fcitx5-gtk \
-    fcitx5-qt \
-    fcitx5-configtool \
-    fcitx5-mozc \
-    fcitx5-chinese-addons \
-    fcitx5-anthy \
-    fcitx5-hangul \
-    fcitx5-libthai \
-    fcitx5-m17n \
-    fcitx5-table-extra
+    ibus \
+    ibus-gtk3 \
+    ibus-gtk4 \
+    ibus-anthy \
+    ibus-hangul \
+    ibus-libpinyin \
+    ibus-chewing \
+    ibus-m17n \
+    ibus-typing-booster
 
 ### Keep image thumbnailers
 ##
@@ -356,27 +360,15 @@ fi
 ##
 ## install_weak_deps=False on the removal keeps dnf from re-pulling anything the
 ## base image weakly Recommends into the gaps (e.g. mariadb Recommends
-## mariadb-server, gtk3/qt weakly recommend the ibus input modules). Removing the
-## whole cluster (rather than one member) means no leftover member is left to
-## pull its siblings back in.
+## mariadb-server, so removing mariadb-server could pull mariadb back in).
+## Removing the whole cluster (rather than one member) means no leftover member
+## is left to pull its siblings back in.
 ##
 ## --- MariaDB server (~~132 MB) ---
 ## A full MariaDB SERVER on a desktop. Nothing Requires it: it is an orphan of
 ## the KDE PIM/akonadi stack that the desktop cleanup above strips. The generic
 ## client library (mariadb-connector-c[-config]) is kept - it is a normal shared
 ## library other code can link against.
-##
-## --- ibus input-method framework (~~370 MB) ---
-## gregOS standardises input on fcitx5 (installed above) with mozc / chinese /
-## anthy / hangul / libthai / m17n engines. ibus is a second, redundant IM
-## framework. Its engines' runtime libraries are NOT part of this removal and are
-## kept because fcitx5 consumes them directly:
-##   anthy, anthy-unicode, m17n-lib, m17n-db, libthai, libthai-data, libime*
-## (fcitx5-anthy -> libanthy.so.0 from anthy; fcitx5-m17n -> m17n-lib;
-##  fcitx5-libthai -> libthai). kasumi-unicode is the anthy dictionary EDITOR and
-## is only held by ibus-anthy; it goes with ibus. unicode-ucd is large Unicode
-## character data that only ibus-typing-booster consumed; glibc and the CJK/IME
-## stacks do their own Unicode handling, so it is safe to drop.
 ##
 ## --- unused leaf applications (~~50 MB) ---
 ## makemkv (DVD/Blu-ray ripper), stress-ng (load tester),
@@ -401,14 +393,6 @@ DEBLOAT_MARIADB='mariadb-server mariadb mariadb-backup mariadb-errmsg
     mariadb-common mariadb-gssapi-server mariadb-cracklib-password-check
     mysql-selinux qt6-qtbase-mysql'
 
-# Full ibus cluster (framework + engines + panel + setup + python bindings +
-# the pinyin lib/data and the typing-booster emoji data it dragged in).
-DEBLOAT_IBUS='ibus ibus-libs ibus-gtk3 ibus-gtk4 ibus-panel ibus-setup
-    python3-ibus ibus-anthy ibus-anthy-python ibus-hangul ibus-libpinyin
-    ibus-m17n ibus-chewing ibus-typing-booster libpinyin libpinyin-data
-    cldr-emoji-annotation cldr-emoji-annotation-dtd kasumi-unicode
-    unicode-ucd'
-
 DEBLOAT_APPS='makemkv stress-ng virtualbox-guest-additions'
 
 # vim: drop the full editor, keep the bare `vi`. vim-minimal and vim-data are
@@ -416,7 +400,7 @@ DEBLOAT_APPS='makemkv stress-ng virtualbox-guest-additions'
 DEBLOAT_VIM='vim-enhanced vim-common vim-filesystem'
 
 debloat_pkgs=""
-for debloat_group in "${DEBLOAT_MARIADB}" "${DEBLOAT_IBUS}" "${DEBLOAT_APPS}" "${DEBLOAT_VIM}"; do
+for debloat_group in "${DEBLOAT_MARIADB}" "${DEBLOAT_APPS}" "${DEBLOAT_VIM}"; do
     # shellcheck disable=SC2086  # intentional word-splitting of the package lists
     for pkg in ${debloat_group}; do
         if rpm -q "${pkg}" >/dev/null 2>&1; then
@@ -443,37 +427,47 @@ fi
 
 ### Verify the input-method stack survived every removal
 ##
-## The fcitx5 stack is installed in the transaction above, and the debloat
-## right above this then drops another batch of packages. dnf removal drags
-## out dependents too, so one wrong entry in a removal list would silently
-## take the input method with it and bring the dead-key bug straight back.
-## Fail the build instead:
+## The ibus stack is installed in the transaction above, and the debloat right
+## after it drops another batch of packages. dnf removal drags out dependents
+## too, so one wrong entry in a removal list would silently take the input
+## method with it and bring the dead-key bug straight back. Fail the build
+## instead:
 ##
-##   1. fcitx5 and its toolkit modules have to be installed - without them
-##      GTK/Qt have nothing to compose with (the whole point of the section
-##      above), and
-##   2. fcitx5-config-qt has to be present - the GUI the README tells users to
-##      open to pick layouts and engines, and
+##   1. ibus and its toolkit input-context modules have to be installed -
+##      without them GTK/Qt have nothing to compose with (the whole point of
+##      the section above),
+##   2. the XKB "keyboard" engine catalog has to be present (it is what
+##      composes dead keys before any IME is configured),
 ##   3. the bare `vi` has to survive the vim debloat (vim-minimal + vim-data),
-##      and
-##   4. ibus has to actually be GONE - one input-method framework only, so a
-##      future base image that grows an ibus autostart cannot race fcitx5.
+##   4. and fcitx5 has to actually be GONE - one input-method framework only,
+##      so a future base image that re-grows an fcitx5 autostart cannot race
+##      ibus.
 
-for im_pkg in fcitx5 fcitx5-gtk fcitx5-qt fcitx5-configtool; do
+for im_pkg in ibus ibus-gtk3 ibus-gtk4 ibus-anthy ibus-hangul ibus-libpinyin \
+              ibus-chewing ibus-m17n ibus-typing-booster; do
     if ! rpm -q "${im_pkg}" >/dev/null 2>&1; then
         echo "input-method package '${im_pkg}' is missing after the removal steps" >&2
         exit 1
     fi
 done
 
-if [[ ! -e /usr/bin/fcitx5-config-qt ]]; then
-    echo "fcitx5-config-qt is missing (fcitx5-configtool incomplete)" >&2
+if [[ ! -e /usr/sbin/ibus-daemon ]]; then
+    echo "ibus-daemon is missing (ibus incomplete)" >&2
     exit 1
 fi
 
-if [[ ! -e /usr/lib64/gtk-4.0/4.0.0/immodules/libim-fcitx5.so ]] \
-    || [[ ! -e /usr/lib64/qt6/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so ]]; then
-    echo "a fcitx5 toolkit input-context module is missing (GTK4/Qt6)" >&2
+if [[ ! -e /usr/lib64/gtk-3.0/3.0.0/immodules/im-ibus.so ]] \
+    || [[ ! -e /usr/lib64/gtk-4.0/4.0.0/immodules/libim-ibus.so ]] \
+    || [[ ! -e /usr/lib64/qt6/plugins/platforminputcontexts/libibusplatforminputcontextplugin.so ]]; then
+    echo "an ibus toolkit input-context module is missing (GTK3/GTK4/Qt6)" >&2
+    exit 1
+fi
+
+# The XKB keyboard engines live in the ibus "simple" component catalog; our
+# dconf default preloads xkb:us:intl:eng out of it, so the exact engine has to
+# exist (see dotfiles for what is preloaded).
+if ! grep -qw 'xkb:us:intl:eng' /usr/share/ibus/component/simple.xml 2>/dev/null; then
+    echo "ibus keyboard engine catalog (simple.xml) is missing xkb:us:intl:eng" >&2
     exit 1
 fi
 
@@ -482,12 +476,14 @@ if ! command -v vi >/dev/null 2>&1; then
     exit 1
 fi
 
-if rpm -q ibus >/dev/null 2>&1; then
-    echo "ibus is still installed; gregOS standardises on fcitx5 only" >&2
-    exit 1
-fi
+for legacy_im_pkg in fcitx5 fcitx5-gtk fcitx5-qt fcitx5-configtool; do
+    if rpm -q "${legacy_im_pkg}" >/dev/null 2>&1; then
+        echo "legacy input-method package '${legacy_im_pkg}' is installed; gregOS standardises on ibus only" >&2
+        exit 1
+    fi
+done
 
-### Credential storage: one supervised GNOME Keyring
+### Credential storage: GNOME Keyring unlock through the PAM flow
 ##
 ## Applications such as Zed store their tokens through the freedesktop Secret
 ## Service (libsecret). Two things have to hold for them to stay silent:
@@ -496,8 +492,8 @@ fi
 ##   2. that daemon must be the one that received the login password - the one
 ##      pam_gnome_keyring started and unlocked during the greetd PAM session.
 ##
-## Measured on a real gregOS install, (2) is what breaks, and it breaks in two
-## steps:
+## Measured on a real gregOS install, (2) is what breaks, and it broke in two
+## steps (gnome-keyring 50.x, Fedora 44 base):
 ##
 ##   a. pam's gnome-keyring-daemon is an unsupervised child of the PAM session
 ##      (exec'd as "gnome-keyring-daemon --daemonize", no --control-directory,
@@ -511,68 +507,79 @@ fi
 ##      every app that needs a secret shows an unlock prompt - exactly the
 ##      "auth is not passed to the keyring" symptom.
 ##
-## The daemon also crashes outright in the Secret Service OpenSession path
-## ("gkd_secret_service_get_pkcs11_session: assertion 'client' failed",
-## "aes_negotiate: assertion 'session' failed", SIGABRT), which is what makes
-## (a) happen mid-session; Fedora's gnome-keyring is 50.x and upstream 51.0
-## carries fixes for exactly these crashes.
+## The image previously addressed this by enabling gnome-keyring's systemd
+## user units (socket + service with --control-directory), hoping the user
+## manager would bind the control socket and carry the unlock. That turned out
+## to be unreliable: the user manager starts as part of the same PAM
+## conversation as the login itself, so on a real greeter login it is usually
+## not up yet when the PAM hook runs - the PAM module then forks its own
+## daemon into a directory the socket unit later fails to bind (unit goes
+## FAILED and drags the service down with its Requires=), and at other timings
+## the socket-connected daemon never ends up owning the keyring. The result
+## was the password prompt at every first login - the very symptom this was
+## supposed to fix - now with more moving parts.
 ##
-## So the fix is to make the keyring a real, supervised, password-carrying
-## session service:
+## The design this image ships instead is the packaged, upstream-blessed PAM
+## flow, which the daemon's own source describes ("the strange world of PAM"):
 ##
-##   - enable gnome-keyring-daemon.socket + .service (they ship with
-##     gnome-keyring). The unit runs the daemon under the systemd user manager
-##     with --control-directory=%t/keyring and Restart=on-failure, so a crash
-##     brings it back instead of leaving a dead control socket behind.
-##   - keep gcr3's gcr-prompter available: it is the dialog gnome-keyring uses
-##     when a prompt really is needed. Fedora ships it as "gcr3" (gcr4 is a
-##     different package and does not provide it).
+##   - the auth hook (pam_gnome_keyring.so, no arguments) stashes the login
+##     password in the PAM handle; the session hook (with auto_start) delivers
+##     it: it connects to the daemon's control socket if one exists, otherwise
+##     it forks `gnome-keyring-daemon --daemonize --login` (reads the password
+##     from stdin, unlocks/creates the login keyring) and registers
+##     GNOME_KEYRING_CONTROL in the PAM environment.
+##   - the packaged systemd user units stay DISABLED. gnome-keyring 51.x
+##     (Fedora 45) also carries the upstream fixes for the Secret Service
+##     crash that had motivated the supervision in the first place, and a
+##     supervised restart would never re-supply the login password anyway.
+##   - the session keeps that PAM-started daemon: the first in-session client
+##     asking for the Secret Service triggers the D-Bus activation file
+##     (Exec=/usr/bin/gnome-keyring-daemon --start --foreground
+##     --components=secrets), whose --start mode *discovers the running
+##     daemon* through $GNOME_KEYRING_CONTROL / %t/keyring/control, forwards
+##     the session environment (including the session bus address) to it, and
+##     the daemon then claims org.freedesktop.secrets itself. Unlocked keyring
+##     and its owner are the same process, no systemd involvement.
+##   - keep gcr3's gcr-prompter available: the dialog shown when a prompt
+##     really is needed. Fedora ships it as "gcr3" (gcr4 is a different
+##     package and does not provide it).
 ##   - drop the KDE credential stack's leftovers so nothing can ever claim
-##     org.freedesktop.secrets behind the keyring's back, and keep its files
-##     from coming back (see the assertions below).
-##   - ship kwalletrc with [KSecretD] Enabled=false, the switch KDE documents
-##     for "use another Secret Service provider", as belt and braces.
+##     org.freedesktop.secrets behind the keyring's back (the pattern cleanup
+##     above removes them).
+##
+## The assertions below therefore verify the whole chain ships intact instead
+## of wiring anything up: the runtime driver is exactly what upstream ships.
 
-# --- 1. supervise the keyring ------------------------------------------------
-#
-# gnome-keyring ships gnome-keyring-daemon.{service,socket} but leaves them
-# disabled, so the only daemon that ever runs is the unsupervised one
-# pam_gnome_keyring forked (or a D-Bus-activated one that never receives the
-# login password). Enable the units for every user exactly the way
-# `systemctl --user enable` would: the units' own [Install] sections put the
-# socket in sockets.target and the service in default.target (with Also= the
-# socket).
-#
-# The socket listens on %t/keyring/control - the same control path
-# pam_gnome_keyring talks to - so the PAM hooks and the systemd-managed daemon
-# are one and the same daemon, and Restart=on-failure brings it back after the
-# Secret Service crash instead of leaving a dead socket and a locked keyring.
+# The daemon, the PAM module, the prompter and the D-Bus activation files are
+# one release; check all four so any packaging change fails the build here
+# instead of surfacing as a locked keyring at login.
+for keyring_pkg in gnome-keyring gnome-keyring-pam gcr3; do
+    if ! rpm -q "${keyring_pkg}" >/dev/null 2>&1; then
+        echo "keyring package '${keyring_pkg}' is missing" >&2
+        exit 1
+    fi
+done
 
-mkdir -p /usr/lib/systemd/user/sockets.target.wants \
-         /usr/lib/systemd/user/default.target.wants \
-         /usr/lib/systemd/user/gnome-keyring-daemon.service.wants
-ln -sfn /usr/lib/systemd/user/gnome-keyring-daemon.socket \
-    /usr/lib/systemd/user/sockets.target.wants/gnome-keyring-daemon.socket
-ln -sfn /usr/lib/systemd/user/gnome-keyring-daemon.service \
-    /usr/lib/systemd/user/default.target.wants/gnome-keyring-daemon.service
-ln -sfn /usr/lib/systemd/user/gnome-keyring-daemon.socket \
-    /usr/lib/systemd/user/gnome-keyring-daemon.service.wants/gnome-keyring-daemon.socket
-
-# --- 2. assert the keyring is supervised ------------------------------------
-
-if [[ ! -e /usr/lib/systemd/user/sockets.target.wants/gnome-keyring-daemon.socket ]] \
-    || [[ ! -e /usr/lib/systemd/user/default.target.wants/gnome-keyring-daemon.service ]]; then
-    echo "gnome-keyring-daemon is not enabled for the user session" >&2
+if [[ ! -x /usr/bin/gnome-keyring-daemon ]]; then
+    echo "gnome-keyring-daemon binary is missing (gnome-keyring incomplete)" >&2
     exit 1
 fi
 
-# The socket must be the single place the daemon keeps its control socket, so
-# it matches the path pam_gnome_keyring connects to (it checks that path and
-# GKD_CONTROL_OP_UNLOCK is how the login password reaches a running daemon).
-if ! grep -q '^ListenStream=%t/keyring/control$' /usr/lib/systemd/user/gnome-keyring-daemon.socket; then
-    echo "gnome-keyring-daemon.socket no longer listens on the PAM control path" >&2
+if [[ ! -e /usr/lib64/security/pam_gnome_keyring.so ]]; then
+    echo "pam_gnome_keyring.so is missing (gnome-keyring-pam incomplete)" >&2
     exit 1
 fi
+
+for keyring_file in \
+    /usr/share/dbus-1/services/org.freedesktop.secrets.service \
+    /usr/libexec/gcr-prompter \
+    /usr/share/dbus-1/services/org.gnome.keyring.PrivatePrompter.service \
+    /usr/share/dbus-1/services/org.gnome.keyring.SystemPrompter.service; do
+    if [[ ! -e "${keyring_file}" ]]; then
+        echo "keyring support file is missing: ${keyring_file}" >&2
+        exit 1
+    fi
+done
 
 # Fail the build if a future greetd package drops the existing PAM hooks;
 # installing the module alone would then no longer unlock/start the keyring.
@@ -595,6 +602,21 @@ fi
 ## system_files afterwards so gregOS defaults and unit overrides win.
 
 cp -avf "/ctx/system_files"/. /
+
+# Rebuild the compiled dconf databases so the image-owned defaults are picked
+# up without any user action. The important one is ibus's own system database
+# (system-db:ibus, read through /etc/dconf/profile/ibus): the ibus defaults we
+# ship in /etc/dconf/db/ibus.d/50-gregos-defaults end up compiled into
+# /etc/dconf/db/ibus.
+if ! command -v dconf >/dev/null 2>&1; then
+    echo "dconf is not installed; cannot compile ibus's dconf defaults" >&2
+    exit 1
+fi
+dconf update
+if [[ ! -e /etc/dconf/db/ibus.d/50-gregos-defaults ]] || [[ ! -e /etc/dconf/db/ibus ]]; then
+    echo "ibus dconf defaults are not in place after dconf update" >&2
+    exit 1
+fi
 
 ### GPU-variant configuration
 ##

@@ -111,34 +111,33 @@ match the shipped files, leaving user edits untouched.
   app (`Mod+Comma`) manages the shell, and its polkit agent is pre-enabled via
   `~/.config/noctalia/10-gregos-defaults.toml`.
 - **Dead keys (compose/accented characters) work consistently in all apps** (GTK2/3/4 and Qt) with layouts
-  like `us-intl`, through **fcitx5**. Since GTK 4.20 (GNOME 49+), GTK no longer handles dead-key and
+  like `us-intl`, through **ibus**. Since GTK 4.20 (GNOME 49+), GTK no longer handles dead-key and
   X11-style compose sequences itself on Wayland — it delegates to an input-method framework, and Qt's Wayland
   text-input path likewise does no composing. Without a running input method, layouts like `us-intl` type
   accents that never appear, and toolkit-builtin workarounds (`GTK_IM_MODULE=simple`, `QT_IM_MODULE=compose`)
-  behave inconsistently across apps. The image ships the full fcitx5 stack (`fcitx5`, `fcitx5-gtk`,
-  `fcitx5-qt`, `fcitx5-configtool`) and the niri session starts it and exports
-  `GTK_IM_MODULE=fcitx`, `QT_IM_MODULE=fcitx`, `XMODIFIERS=@im=fcitx`, so every toolkit composes through
-  fcitx5. Keyboard layout / input-method engines are configured with `fcitx5-config-qt`.
-  **One rule to keep in mind:** fcitx5's layout has to match niri's. fcitx5 re-maps keys through its own
-  keymap, and only skips that when its layout equals the compositor's — so if niri's
-  `input { keyboard { xkb { layout … } } }` says one thing and fcitx5's profile says another, the accents
-  come out wrong or not at all. Set both to the same layout (e.g. `us-intl` in niri and *Keyboard - English
-  (US, intl., with dead keys)* in `fcitx5-config-qt`). This is also why the shipped niri config leaves the
-  layout unset: it is a per-user choice, and fcitx5's own default (`keyboard-us`) has no dead keys to speak
-  of.
+  behave inconsistently across apps. The image ships the full ibus stack (`ibus`, `ibus-gtk3`, `ibus-gtk4`,
+  plus Qt's ibus plugin from `qt6-qtbase-gui`) and the niri session starts `ibus-daemon -drx` and exports
+  `GTK_IM_MODULE=ibus`, `QT_IM_MODULE=ibus`, `XMODIFIERS=@im=ibus`, so every toolkit composes through ibus.
+  The ibus keyboard engine for this layout (`xkb:us:intl`) is preloaded as a dconf system default, so dead
+  keys work with no first-run setup. Engines/config is at `ibus-setup`.
+  **One rule to keep in mind:** an ibus keyboard engine mirrors its own layout. With the preloaded
+  `xkb:us:intl` engine, accents match a `us-intl` XKB layout set in niri
+  (`input { keyboard { xkb { layout … } } }`); if niri's layout says something else, set the matching
+  ibus keyboard engine in `ibus-setup` (or change the engine). This is also why the shipped niri config
+  leaves the layout unset: it is a per-user choice.
 - **Full input-method (IME) input is ready out of the box.** The engine set for the locales that need real
-  IME is pre-installed — Japanese (`fcitx5-mozc`, with `fcitx5-anthy` as a lighter fallback),
-  Simplified/Traditional Chinese (`fcitx5-chinese-addons`), Korean (`fcitx5-hangul`), Thai
-  (`fcitx5-libthai`), plus the generic `fcitx5-m17n` and `fcitx5-table-extra` wrappers (Vietnamese, Indic,
-  Cantonese, …). They are inactive by default: fcitx5's default profile contains only keyboard engines, so
-  plain Latin/dead-key input keeps working for everyone until the user adds an IME — open
-  `fcitx5-config-qt`, add the wanted engine (e.g. "Mozc" or "Pinyin"), and switch engines with the default
+  IME is pre-installed — Japanese (`ibus-anthy`), Simplified Chinese (`ibus-libpinyin`), Traditional
+  Chinese (`ibus-chewing`, plus `xkb:us…` Bopomofo alternatives), Korean (`ibus-hangul`), Thai and the
+  wider catalogue through `ibus-m17n`, and the predictive `ibus-typing-booster` (emoji/unicode). The IME
+  engines sit inactive next to the preloaded keyboard engine: plain Latin/dead-key input keeps working for
+  everyone until the user adds an IME — open `ibus-setup`, add the wanted engine (e.g. "Anthy" or
+  "Intelligent Pinyin"), and switch engines with the default
   toggle (usually `Ctrl+Space`).
   Flatpak support is automatic: the image ships a system-wide override (`/etc/flatpak/overrides/global`)
   that injects the same IM environment into every Flatpak. It only selects which input-context module the
-  toolkits load, and how much it helps depends on the app's runtime — the fcitx module has to be *inside*
+  toolkits load, and how much it helps depends on the app's runtime — the ibus module has to be *inside*
   the sandbox, and runtimes differ: the GNOME runtime ships it for GTK3 **and** GTK4, the freedesktop
-  runtime only for GTK3. So GTK4 apps on the freedesktop runtime, and Qt apps in general, have no fcitx
+  runtime only for GTK3. So GTK4 apps on the freedesktop runtime, and Qt apps in general, have no ibus
   module to load and get their default input handling back (a warning in the log, plain Latin input still
   fine). For such an app where dead keys specifically matter, override it alone with GTK's built-in
   composer, which is compiled into every GTK build:

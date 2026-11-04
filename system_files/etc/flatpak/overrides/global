@@ -1,19 +1,19 @@
 # Managed by gregOS - system-wide Flatpak override.
 #
 # Flatpak apps do not inherit the niri session environment. These variables
-# route them through fcitx5 (started by the session, see dotfiles/niri/
+# route them through ibus (started by the session, see dotfiles/niri/
 # config.kdl) so dead keys / compose sequences / full IME input work in
-# Flatpaks wherever the app's runtime carries the fcitx module.
+# Flatpaks wherever the app's runtime carries the ibus input-context module.
 #
 # Safety: these only select which input-context module the toolkits load.
 # The module has to be inside the app's own sandbox, and runtimes differ — the
-# GNOME runtime ships the fcitx module for GTK3 and GTK4, the freedesktop
+# GNOME runtime ships the ibus module for GTK3 and GTK4, the freedesktop
 # runtime only for GTK3. Apps whose runtime lacks it simply log a warning and
 # fall back to their default input handling. Plain Latin input keeps working
 # either way. Where dead keys matter in such an app, override just that app
 # with GTK's built-in composer instead:
 #   flatpak override --user --env=GTK_IM_MODULE=simple <app-id>
 [Environment]
-GTK_IM_MODULE=fcitx
-QT_IM_MODULE=fcitx
-XMODIFIERS=@im=fcitx
+GTK_IM_MODULE=ibus
+QT_IM_MODULE=ibus
+XMODIFIERS=@im=ibus

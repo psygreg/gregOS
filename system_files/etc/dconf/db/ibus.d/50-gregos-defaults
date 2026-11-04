@@ -1,0 +1,25 @@
+# gregOS: ibus defaults (dconf system-db:ibus, the database ibus reads).
+#
+# This preloads the XKB keyboard engine for the shipped default layout
+# (us-intl) leaves the global engine enabled at start, so dead-key/compose
+# input works out of the box under niri, where no compositor-level
+# input-method bridge exists (GNOME's shell would otherwise do that bridging).
+# layout/variant is the XKB pair niri's shipped config assumes ("us",
+# "intl"); the engine name follows ibus's xkb:<layout>:<variant>:<locale>
+# scheme and is provided by ibus-engine-simple - the build asserts it exists
+# in simple.xml.
+#
+# ibus's own base file below (00-upstream-settings) sets enable-by-default=
+# false and preload-engines=[] (see /etc/dconf/db/ibus.d/) - that is correct
+# for GNOME sessions, where the shell bridges input methods itself, and wrong
+# for gregOS's niri sessions, so this file overrides exactly those two keys.
+#
+# Users can switch engines freely in ibus-setup; a user-level change wins over
+# this system default (user-db:user comes before system-db:ibus in the ibus
+# dconf profile).
+#
+# Keyfile groups are dconf paths: the ibus schema lives at /desktop/ibus/.
+
+[desktop/ibus/general]
+enable-by-default=true
+preload-engines=['xkb:us:intl:eng']
