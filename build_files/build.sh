@@ -289,9 +289,12 @@ shopt -u nullglob
 ## installing either full desktop environment. Install them after the desktop
 ## package cleanup above: its broad KDE prefix also matches kde-connect.
 ##
-## Fedora's greetd PAM file already contains optional gnome-keyring auth and
-## session hooks; the leading '-' only silences errors if a module is missing.
+## Fedora's greetd PAM file contains optional gnome-keyring auth and session
+## hooks; the leading '-' only silences errors if a module is missing.
 ## gnome-keyring-pam supplies the module that makes those hooks work.
+## Fedora moved greetd's PAM file to /usr/lib/pam.d/greetd in Fedora 45
+## (previously /etc/pam.d/greetd); /etc/pam.d still takes precedence when a
+## copy exists there, so both layouts receive the same hooks.
 
 dnf5 install -y \
     nautilus \
@@ -571,11 +574,18 @@ if ! grep -q '^ListenStream=%t/keyring/control$' /usr/lib/systemd/user/gnome-key
     exit 1
 fi
 
-# Fail the build if a future greetd package drops either existing PAM hook;
+# Fail the build if a future greetd package drops the existing PAM hooks;
 # installing the module alone would then no longer unlock/start the keyring.
-if ! grep -Eq '^-?auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so([[:space:]]|$)' /etc/pam.d/greetd \
-    || ! grep -Eq '^-?session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so[[:space:]]+auto_start([[:space:]]|$)' /etc/pam.d/greetd; then
-    echo "Fedora greetd PAM configuration is missing the GNOME Keyring hooks" >&2
+# Fedora 45 moved greetd's PAM file to /usr/lib/pam.d/greetd (F44 shipped it
+# at /etc/pam.d/greetd); pam resolves /etc/pam.d first and falls back to the
+# /usr/lib copy, so follow the same precedence and check whichever exists.
+greetd_pam_file=/etc/pam.d/greetd
+if [[ ! -e "/etc/pam.d/greetd" ]]; then
+    greetd_pam_file=/usr/lib/pam.d/greetd
+fi
+if ! grep -Eq '^-?auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so([[:space:]]|$)' "${greetd_pam_file}" \
+    || ! grep -Eq '^-?session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so[[:space:]]+auto_start([[:space:]]|$)' "${greetd_pam_file}"; then
+    echo "Fedora greetd PAM configuration (${greetd_pam_file}) is missing the GNOME Keyring hooks" >&2
     exit 1
 fi
 
