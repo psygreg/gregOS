@@ -1,0 +1,8 @@
+# gregOS: set up requirements for EasyAntiCheat 2 for Linux:
+# kernel lockdown, kexec and IOMMU
+kargs = [
+  "lockdown=integrity",
+  "sysctl.kernel.kexec_load_disabled=1",
+  "intel_iommu=on",
+  "amd_iommu=on"
+]

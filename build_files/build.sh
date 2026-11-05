@@ -618,6 +618,61 @@ if [[ ! -e /etc/dconf/db/ibus.d/50-gregos-defaults ]] || [[ ! -e /etc/dconf/db/i
     exit 1
 fi
 
+### Verify the shipped kernel arguments (bootc kargs.d)
+##
+## system_files carries three drop-ins under /usr/lib/bootc/kargs.d/ that bootc
+## applies when it creates or updates this image's deployment:
+##
+##   10-gregos-eac2.toml    EasyAntiCheat 2 for Linux baseline: kernel lockdown,
+##                          kexec disabled and IOMMU enabled. These are also
+##                          what EAC looks for, so a deployment without them
+##                          cannot run EAC2 games.
+##   20-gregos-zswap.toml   zswap tuning (see the zswap section above).
+##   30-gregos-gaming.toml  x86 gaming tweaks (split_lock_detect, UMIP).
+##
+## bootc reads these files on every deployment path this image has (bootc
+## install for disk/ISO images, bootc switch --mutate-in-place from the ISO
+## kickstart, and bootc upgrade diffs them against the previous image while
+## preserving machine-local kernel arguments). The `bootc container lint` step
+## at the end of the Containerfile already fails the build on malformed TOML;
+## what no step checks until now is that the files are still there and still
+## carry the arguments they are supposed to. Fail the build so a future cleanup
+## or rename cannot silently drop anti-cheat requirements or the zswap/gaming
+## tweaks. Each match is made against the quoted array entry, so extra
+## commentary in the files cannot gracefully satisfy a check.
+
+for kargs_file in 10-gregos-eac2.toml 20-gregos-zswap.toml 30-gregos-gaming.toml; do
+    if [[ ! -e "/usr/lib/bootc/kargs.d/${kargs_file}" ]]; then
+        echo "bootc kargs.d drop-in '${kargs_file}' is missing" >&2
+        exit 1
+    fi
+done
+
+for eac2_karg in lockdown=integrity sysctl.kernel.kexec_load_disabled=1 \
+                 intel_iommu=on amd_iommu=on; do
+    if ! grep -qF "\"${eac2_karg}\"" /usr/lib/bootc/kargs.d/10-gregos-eac2.toml; then
+        echo "EAC2 kernel argument '${eac2_karg}' is missing from /usr/lib/bootc/kargs.d/10-gregos-eac2.toml" >&2
+        exit 1
+    fi
+done
+
+for zswap_karg in zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd \
+                  zswap.max_pool_percent=25 zswap.zpool=zsmalloc; do
+    if ! grep -qF "\"${zswap_karg}\"" /usr/lib/bootc/kargs.d/20-gregos-zswap.toml; then
+        echo "zswap kernel argument '${zswap_karg}' is missing from /usr/lib/bootc/kargs.d/20-gregos-zswap.toml" >&2
+        exit 1
+    fi
+done
+
+# x86-specific parameters are skipped by the TOML itself on other architectures;
+# the drop-in and its entries are still required to ship.
+for gaming_karg in split_lock_detect=off clearcpuid=umip; do
+    if ! grep -qF "\"${gaming_karg}\"" /usr/lib/bootc/kargs.d/30-gregos-gaming.toml; then
+        echo "gaming kernel argument '${gaming_karg}' is missing from /usr/lib/bootc/kargs.d/30-gregos-gaming.toml" >&2
+        exit 1
+    fi
+done
+
 ### GPU-variant configuration
 ##
 ## The image is built from one of three Bazzite bases, selected with the
