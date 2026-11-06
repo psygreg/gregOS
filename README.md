@@ -120,6 +120,13 @@ match the shipped files, leaving user edits untouched.
   `GTK_IM_MODULE=ibus`, `QT_IM_MODULE=ibus`, `XMODIFIERS=@im=ibus`, so every toolkit composes through ibus.
   The ibus keyboard engine for this layout (`xkb:us:intl`) is preloaded as a dconf system default, so dead
   keys work with no first-run setup. Engines/config is at `ibus-setup`.
+
+  Apps launched through D-Bus/systemd activation (the GNOME apps, e.g. the Text Editor opened via
+  "Open with…" in the file manager) are spawned by the systemd user manager instead of the session, with
+  the manager's environment rather than the caller's, so the niri session variables above never reached
+  them and they loaded no ibus module. The image therefore also ships the same variables as an
+  `environment.d` drop-in (`/usr/lib/environment.d/10-gregos-ibus.conf`), which the user manager reads at
+  startup: apps launched that way get the same IM environment and compose identically.
   **One rule to keep in mind:** an ibus keyboard engine mirrors its own layout. With the preloaded
   `xkb:us:intl` engine, accents match a `us-intl` XKB layout set in niri
   (`input { keyboard { xkb { layout … } } }`); if niri's layout says something else, set the matching

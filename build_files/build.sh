@@ -288,6 +288,28 @@ shopt -u nullglob
 ## warning and fall back to their default input handling — the env override
 ## never breaks plain (Latin, dead-key) input. See the README for the
 ## per-app `GTK_IM_MODULE=simple` fallback.
+##
+## There is a third launch path that sees NONE of the above: systemd/D-Bus
+## activation of desktop apps. When a .desktop file sets DBusActivatable=true
+## (all of the GNOME apps Text Editor, Loupe, Showtime, Disk Utility,
+## Seahorse, Nautilus itself, ...), launching it through
+## org.freedesktop.Application — which is exactly what a file manager's
+## "Open with..." context menu does — does not fork/exec the app as a child
+## of the caller. The app is spawned as a --gapplication-service child of
+## the systemd user manager, with the manager's environment instead of the
+## caller's. That manager environment is imported from the login flow by
+## niri-session (systemctl --user import-environment) BEFORE niri runs, so
+## it never contains variables that only exist inside the niri session: apps
+## spawned this way have no GTK_IM_MODULE, and since GTK 4.20 delegates
+## dead-key composing to an input-method framework (the rationale at the top
+## of this section), dead keys were dead precisely in those apps while
+## working from each launcher-spawned app. system_files therefore carries
+## /usr/lib/environment.d/10-gregos-ibus.conf, the same variables as a
+## systemd environment.d drop-in: the user manager applies it at startup, so
+## D-Bus-activated apps (and everything else started as a user unit) inherit
+## the IM environment too. Session-spawned apps then see the variables twice
+## with identical values, which is harmless, and a user's own
+## ~/.config/environment.d keeps winning over /usr/lib settings.
 
 ### Install selected cross-desktop applications
 ##
@@ -470,6 +492,25 @@ if ! grep -qw 'xkb:us:intl:eng' /usr/share/ibus/component/simple.xml 2>/dev/null
     echo "ibus keyboard engine catalog (simple.xml) is missing xkb:us:intl:eng" >&2
     exit 1
 fi
+
+# The environment.d drop-in is the one channel that reaches systemd/D-Bus
+# activated apps (see the "third launch path" paragraph in the input-method
+# section above). Fail the build if it is missing or incomplete: a future
+# cleanup that removes the file silently re-opens the "dead keys broken in
+# every DBusActivatable=true app opened from a file manager" bug, while the
+# session looks fine. Check the file AND its three assignments, since line
+# churn inside the file is just as silent as the file itself going away.
+if [[ ! -e /usr/lib/environment.d/10-gregos-ibus.conf ]]; then
+    echo "ibus environment.d drop-in (system_files/usr/lib/environment.d/10-gregos-ibus.conf) is missing" >&2
+    exit 1
+fi
+
+for im_env_assignment in GTK_IM_MODULE=ibus QT_IM_MODULE=ibus XMODIFIERS=@im=ibus; do
+    if ! grep -qF "${im_env_assignment}" /usr/lib/environment.d/10-gregos-ibus.conf; then
+        echo "'${im_env_assignment}' is missing from /usr/lib/environment.d/10-gregos-ibus.conf" >&2
+        exit 1
+    fi
+done
 
 if ! command -v vi >/dev/null 2>&1; then
     echo "the bare 'vi' editor is missing after the vim debloat" >&2
