@@ -493,25 +493,6 @@ if ! grep -qw 'xkb:us:intl:eng' /usr/share/ibus/component/simple.xml 2>/dev/null
     exit 1
 fi
 
-# The environment.d drop-in is the one channel that reaches systemd/D-Bus
-# activated apps (see the "third launch path" paragraph in the input-method
-# section above). Fail the build if it is missing or incomplete: a future
-# cleanup that removes the file silently re-opens the "dead keys broken in
-# every DBusActivatable=true app opened from a file manager" bug, while the
-# session looks fine. Check the file AND its three assignments, since line
-# churn inside the file is just as silent as the file itself going away.
-if [[ ! -e /usr/lib/environment.d/10-gregos-ibus.conf ]]; then
-    echo "ibus environment.d drop-in (system_files/usr/lib/environment.d/10-gregos-ibus.conf) is missing" >&2
-    exit 1
-fi
-
-for im_env_assignment in GTK_IM_MODULE=ibus QT_IM_MODULE=ibus XMODIFIERS=@im=ibus; do
-    if ! grep -qF "${im_env_assignment}" /usr/lib/environment.d/10-gregos-ibus.conf; then
-        echo "'${im_env_assignment}' is missing from /usr/lib/environment.d/10-gregos-ibus.conf" >&2
-        exit 1
-    fi
-done
-
 if ! command -v vi >/dev/null 2>&1; then
     echo "the bare 'vi' editor is missing after the vim debloat" >&2
     exit 1
@@ -658,6 +639,27 @@ if [[ ! -e /etc/dconf/db/ibus.d/50-gregos-defaults ]] || [[ ! -e /etc/dconf/db/i
     echo "ibus dconf defaults are not in place after dconf update" >&2
     exit 1
 fi
+
+# The environment.d drop-in is the one channel that reaches systemd/D-Bus
+# activated apps (see the "third launch path" paragraph in the input-method
+# section above). It is applied from system_files with the copy above, so
+# this is the first point where it can be verified at all. Fail the build if
+# it is missing or incomplete: a future cleanup that removes the file
+# silently re-opens the "dead keys broken in every DBusActivatable=true app
+# opened from a file manager" bug, while the session looks fine. Check the
+# file AND its three assignments, since churn inside the file is just as
+# silent as the file itself going away.
+if [[ ! -e /usr/lib/environment.d/10-gregos-ibus.conf ]]; then
+    echo "ibus environment.d drop-in (system_files/usr/lib/environment.d/10-gregos-ibus.conf) is missing from the build root" >&2
+    exit 1
+fi
+
+for im_env_assignment in GTK_IM_MODULE=ibus QT_IM_MODULE=ibus XMODIFIERS=@im=ibus; do
+    if ! grep -qF "${im_env_assignment}" /usr/lib/environment.d/10-gregos-ibus.conf; then
+        echo "'${im_env_assignment}' is missing from /usr/lib/environment.d/10-gregos-ibus.conf" >&2
+        exit 1
+    fi
+done
 
 ### Verify the shipped kernel arguments (bootc kargs.d)
 ##
