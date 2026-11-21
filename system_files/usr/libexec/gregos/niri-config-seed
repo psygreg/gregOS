@@ -49,4 +49,18 @@ for home in /home/*/; do
             "${home}/.config/noctalia/10-gregos-defaults.toml"
         echo "gregos-niri-config-seed: installed Noctalia defaults for ${home}"
     fi
+
+    # The session-actions file is a separate default (not a later revision of
+    # 10-gregos-defaults.toml) so this install-if-missing seed reaches homes
+    # that already carry an unmodified 10- file: those copies are never
+    # replaced, and without this the session panel keeps its built-in
+    # logout/shutdown/reboot actions and sessions end without a snapshot.
+    if [[ ! -e "${home}/.config/noctalia/15-gregos-session-actions.toml" ]]; then
+        [[ -d "${home}/.config" ]] || install -d -m 0700 -o "${uid}" -g "${gid}" "${home}/.config"
+        [[ -d "${home}/.config/noctalia" ]] || install -d -m 0755 -o "${uid}" -g "${gid}" "${home}/.config/noctalia"
+        install -m 0644 -o "${uid}" -g "${gid}" \
+            "${noctalia_src}/15-gregos-session-actions.toml" \
+            "${home}/.config/noctalia/15-gregos-session-actions.toml"
+        echo "gregos-niri-config-seed: installed Noctalia session actions for ${home}"
+    fi
 done

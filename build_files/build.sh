@@ -153,6 +153,49 @@ if [[ ! -x /usr/bin/latencydevil ]]; then
     exit 1
 fi
 
+### Built-in: niri-resume session save/restore helper on PATH
+##
+## gregOS ships the niri-resume session save/restore helper
+## (https://github.com/psygreg/niri-resume) as an image built-in, next to
+## helpers like the latencydevil launcher wrapper above. niri has no
+## end-of-session hook, so the session-ending actions themselves run the tool:
+## Noctalia's Log out / Shut down / Reboot actions are overridden (see
+## dotfiles/noctalia/15-gregos-session-actions.toml) to run
+## "niri-resume save-quit" / "save-shutdown" / "save-reboot", the compositor's
+## Mod+Shift+E / Ctrl+Alt+Delete quit binds and the physical power button
+## (XF86PowerOff, with logind's short-press handling ignored through a
+## logind.conf.d drop-in) run the same commands, and each of them writes a
+## snapshot of the open apps (workspace, size, maximized/fullscreen state,
+## position) before performing the action itself, so there is no race
+## between saving and exiting. At the start of the next session niri's
+## spawn-at-startup (the last entry in dotfiles/niri/config.kdl) runs
+## "niri-resume restore", which relaunches the recorded apps with their
+## original command lines and re-places their windows.
+##
+## Like latencydevil, it ships as a single self-contained binary named
+## "niri-resume" with no package to install: download it from the latest
+## release the same way LinuxToys, Heroic and latencydevil above are fetched -
+## resolve the current asset through the GitHub API. The GITHUB_TOKEN build
+## secret (wired up in build.yml and the Justfile) authenticates the request
+## in CI to avoid unauthenticated API rate limits; local builds fall back to
+## anonymous access. Daily image builds therefore automatically pick up every
+## new niri-resume release.
+
+niri_resume_url="$(/ctx/ghcurl https://api.github.com/repos/psygreg/niri-resume/releases/latest \
+    | jq -r '.assets[] | select(.name == "niri-resume") | .browser_download_url')"
+echo "Fetching niri-resume: ${niri_resume_url}"
+/ctx/ghcurl "${niri_resume_url}" -o /tmp/niri-resume
+install -m 0755 /tmp/niri-resume /usr/bin/niri-resume
+rm -f /tmp/niri-resume
+
+# Fail the build if the binary did not land on PATH as an executable - nothing
+# else ships it, and both the Noctalia session commands and the
+# spawn-at-startup restore resolve "niri-resume" through PATH only.
+if [[ ! -x /usr/bin/niri-resume ]]; then
+    echo "niri-resume is missing from /usr/bin after installation" >&2
+    exit 1
+fi
+
 ### Replace zram-generator with zswap
 ##
 ## Swap-on-zram is removed in favor of zswap: the kernel compresses swapped
@@ -810,6 +853,73 @@ cp -avf /ctx/dotfiles/noctalia/. /etc/skel/.config/noctalia/
 # Validate both the system config and the per-user wrapper, including includes.
 niri validate -c /etc/niri/config.kdl
 niri validate -c /usr/share/niri/defaults/config.kdl
+
+# Fail the build if the session resume wiring ever goes missing. The restore
+# entry has to be the last spawn-at-startup of the shipped config, the
+# session-actions file has to carry all three overrides (with their fallbacks,
+# so the action still happens if the save fails), the compositor's own
+# session-ending binds and the power button have to be wired, and logind has
+# to stay out of the way: a dropped piece silently reverts that path to its
+# plain behavior, and sessions then end without a niri-resume snapshot while
+# the restore still runs at startup.
+if ! grep -qF 'spawn-at-startup "niri-resume" "restore"' /etc/niri/config.kdl; then
+    echo "niri-resume restore is missing from the shipped niri config" >&2
+    exit 1
+fi
+
+if ! grep -qF 'spawn-at-startup "noctalia"' /etc/niri/config.kdl; then
+    echo "noctalia is missing from the shipped niri config" >&2
+    exit 1
+fi
+
+if [[ "$(grep -n 'spawn-at-startup "niri-resume" "restore"' /etc/niri/config.kdl | head -1 | cut -d: -f1)" \
+      -le "$(grep -n 'spawn-at-startup "noctalia"' /etc/niri/config.kdl | head -1 | cut -d: -f1)" ]]; then
+    echo "niri-resume restore must be spawned after noctalia in the shipped niri config" >&2
+    exit 1
+fi
+
+# niri's hardcoded power key handling (suspend through a logind inhibitor)
+# runs before configured binds, so without this flag the XF86PowerOff bind
+# below would never fire and the power button would suspend instead.
+if ! grep -qF 'disable-power-key-handling' /etc/niri/config.kdl; then
+    echo "disable-power-key-handling is missing from the shipped niri config" >&2
+    exit 1
+fi
+
+for session_bind in 'Mod+Shift+E { spawn-sh "niri-resume save-quit' \
+                    'Ctrl+Alt+Delete { spawn-sh "niri-resume save-quit' \
+                    'XF86PowerOff allow-when-locked=true { spawn-sh "niri-resume save-shutdown'; do
+    if ! grep -qF "${session_bind}" /etc/niri/config.kdl; then
+        echo "session-ending bind is missing from the shipped niri config: ${session_bind}" >&2
+        exit 1
+    fi
+done
+
+if [[ ! -e /etc/systemd/logind.conf.d/10-gregos-power-button.conf ]]; then
+    echo "logind power button drop-in is missing from the build root" >&2
+    exit 1
+fi
+if ! grep -qF 'HandlePowerKey=ignore' /etc/systemd/logind.conf.d/10-gregos-power-button.conf \
+    || ! grep -qF 'HandlePowerKeyLongPress=poweroff' /etc/systemd/logind.conf.d/10-gregos-power-button.conf; then
+    echo "logind power button drop-in does not ignore short presses / power off on long press" >&2
+    exit 1
+fi
+
+for noctalia_actions_file in /usr/share/gregos/noctalia/15-gregos-session-actions.toml \
+                             /etc/skel/.config/noctalia/15-gregos-session-actions.toml; do
+    if [[ ! -e "${noctalia_actions_file}" ]]; then
+        echo "Noctalia session actions file is missing: ${noctalia_actions_file}" >&2
+        exit 1
+    fi
+    for session_command in 'niri-resume save-quit || niri msg action quit' \
+                           'niri-resume save-reboot || systemctl reboot' \
+                           'niri-resume save-shutdown || systemctl poweroff'; do
+        if ! grep -qF "${session_command}" "${noctalia_actions_file}"; then
+            echo "'${session_command}' is missing from ${noctalia_actions_file}" >&2
+            exit 1
+        fi
+    done
+done
 
 ### GnuPG: keep keyboxd disabled
 ##

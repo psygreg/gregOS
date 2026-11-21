@@ -1,0 +1,58 @@
+# Session-ending actions wired through niri-resume, shipped by gregOS.
+#
+# niri-resume (https://github.com/psygreg/niri-resume) records which apps were
+# open when a session ended - each window's workspace, size, maximized/
+# fullscreen state and position - and relaunches and re-places them at the
+# next session start (niri's last spawn-at-startup entry, see
+# dotfiles/niri/config.kdl). It has no daemon and niri has no end-of-session
+# hook, so the session-ending action itself has to run the tool first: the
+# command overrides below replace Noctalia's built-in Log out / Shut down /
+# Reboot implementations. Noctalia runs the command with /bin/sh -lc after its
+# logging_out/rebooting/shutting_down hooks; niri-resume then writes the
+# snapshot and only afterwards quits niri, powers off or reboots, so there is
+# no race between saving and exiting.
+#
+# Each command carries a "||" fallback (niri msg action quit / systemctl
+# poweroff / systemctl reboot): if niri-resume ever fails before the action -
+# a broken IPC connection, an unwritable state file - the session still ends
+# the plain way, it just skips the snapshot (the next restore then replays
+# the last successful one).
+#
+# The compositor-side session ends are wired the same way in
+# dotfiles/niri/config.kdl: Mod+Shift+E and Ctrl+Alt+Delete quit binds and
+# the XF86PowerOff (physical power button) bind run the same save commands
+# with the same fallbacks; systemd-logind's short-press handling is ignored
+# through the shipped logind.conf.d drop-in so the button reaches them.
+#
+# Lock and Lock & Suspend keep their built-in implementations: suspending and
+# locking do not end the session, so there is nothing to record. The greeter
+# (the login screen) has its own actions and never sees this file.
+#
+# NOTE: declaring [[shell.session.actions]] REPLACES Noctalia's default
+# action list, so all five default entries are re-declared here, in the
+# default order, with their default shortcuts and shutdown's destructive
+# style; only logout/reboot/shutdown gain a command override.
+
+[[shell.session.actions]]
+action = "lock"
+shortcut = "1"
+
+[[shell.session.actions]]
+action = "logout"
+command = "niri-resume save-quit || niri msg action quit"
+shortcut = "2"
+
+[[shell.session.actions]]
+action = "lock_and_suspend"
+shortcut = "3"
+
+[[shell.session.actions]]
+action = "reboot"
+command = "niri-resume save-reboot || systemctl reboot"
+shortcut = "4"
+
+[[shell.session.actions]]
+action = "shutdown"
+command = "niri-resume save-shutdown || systemctl poweroff"
+shortcut = "5"
+variant = "destructive"

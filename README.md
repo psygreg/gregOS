@@ -60,6 +60,16 @@ environment with a tiling-compositor setup:
   or Flatpak command with `latencydevil -- …` — to inject GPU-aware low-latency environment variables in
   front of it; the wrapper `exec`s into the game, leaving nothing extra in the process tree. Run
   `latencydevil --print` to see the variables it would apply on this system.
+- **[`niri-resume`](https://github.com/psygreg/niri-resume) session resume** — the apps open when a session
+  ends come back at the next login, with their workspace, size, maximized/fullscreen state and position.
+  Noctalia's Log out / Shut down / Reboot actions (`dotfiles/noctalia/15-gregos-session-actions.toml`) run
+  the tool's `save-quit` / `save-shutdown` / `save-reboot` commands instead of the plain action: the
+  snapshot is written before the action fires, so there is no race between saving and exiting. niri then
+  runs `niri-resume restore` as the last `spawn-at-startup` entry on the next login, relaunching the
+  recorded apps with their original command lines and re-placing their windows. The binary is installed
+  on the system `PATH` (`/usr/bin/niri-resume`, fetched at build time from its latest GitHub release, so
+  image builds automatically pick up new versions); see [Using the desktop](#using-the-desktop) for the
+  details.
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every image build automatically picks up the newest
   version. It replaces Bazaar and Bold Brew as the image's software and system manager. Its well-known optimization tweaks are also baked into the image.
@@ -101,6 +111,34 @@ match the shipped files, leaving user edits untouched.
   2560x1440 display), so it is correctly sized at any resolution and on any display of a multi-monitor setup.
   To change its size, add a `window-rule` below the `include` line in your `config.kdl`.
 - Noctalia starts automatically with the session (`spawn-at-startup "noctalia"`).
+- **Session resume** ([`niri-resume`](https://github.com/psygreg/niri-resume), see the built-in list above):
+  `niri-resume restore` is the last `spawn-at-startup` entry, so the apps that were open at the end of the
+  previous session are relaunched and re-placed after the shell, portals and display setup are already
+  coming up. It picks the snapshot up from the previous session's end, which happens through every
+  session-ending path the image wires:
+  - **Log out** runs `niri-resume save-quit`: the session snapshot is written first, then niri quits.
+  - **Reboot** runs `niri-resume save-reboot`: snapshot first, then `systemctl reboot`.
+  - **Shut down** runs `niri-resume save-shutdown`: snapshot first, then `systemctl poweroff`.
+  - **Lock** and **Lock & Suspend** keep their built-in implementations — suspending and locking do not
+    end the session, so there is nothing to record.
+  - The same overridden actions are used everywhere Noctalia exposes them: the session panel, the
+    launcher's `/session` provider, `noctalia msg session …` and the lock screen buttons.
+  - The compositor's own session-ending keys are wired the same way: `Mod+Shift+E` and `Ctrl+Alt+Delete`
+    (niri's default-config quit binds, not present in this standalone config until now) save and quit,
+    and the **physical power button** saves and shuts down. For the button, niri's built-in power-key
+    handling (it takes a logind inhibitor and suspends on every press) is disabled
+    (`disable-power-key-handling`), and systemd-logind ignores short presses through
+    `/etc/systemd/logind.conf.d/10-gregos-power-button.conf` — otherwise the plain poweroff would fire
+    before anything could save. The button works while the session is locked too. **Long-pressing** the
+    button outside a niri session (greeter, TTY console) still powers off through logind; inside a
+    session the press-time shutdown wins first.
+  - Every one of these carries a `||` fallback (`niri msg action quit` / `systemctl poweroff` /
+    `systemctl reboot`): if the save itself fails (broken IPC, unwritable state file), the session still
+    ends the plain way, it just skips the snapshot — the next restore then replays the last successful
+    one.
+  - Only crashes and firmware-level long-press force-offs skip the snapshot.
+  - Restore can be skipped once with `niri-resume clear` (e.g. before logging out of a throwaway
+    session), and `niri-resume list` shows what a save would record right now.
 - Portals: `xdg-desktop-portal-gtk` + `xdg-desktop-portal-gnome` (niri's screencast path), per niri/Noctalia
   recommendations. Xwayland apps run through `xwayland-satellite`, which is a dependency of the Fedora niri
   package.
@@ -203,6 +241,25 @@ match the shipped files, leaving user edits untouched.
 |---|---|
 | Volume up / down / mute | Noctalia volume and mute |
 | Brightness up / down | Noctalia brightness |
+
+**Session** (Noctalia session panel: the bar's Session widget, the Control Center, or `/session` in the
+launcher — each action also has its numbered shortcut while the panel is open)
+
+| Key | Action |
+|---|---|
+| `1` | Lock |
+| `2` | Log out (saves the session, then quits niri) |
+| `3` | Lock & Suspend |
+| `4` | Reboot (saves the session, then reboots) |
+| `5` | Shut down (saves the session, then powers off) |
+
+**Session resume** (compositor-side paths through the same niri-resume save)
+
+| Key | Action |
+|---|---|
+| `Mod+Shift+E` | Save the session, then quit niri |
+| `Ctrl+Alt+Delete` | Save the session, then quit niri |
+| Power button | Save the session, then shut down (works while locked; a long press outside a niri session powers off through logind) |
 
 The mouse-wheel binds use a 150 ms cooldown so one scroll step doesn't move several places at once.
 

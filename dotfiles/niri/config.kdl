@@ -36,6 +36,16 @@ input {
         accel-profile "flat"
         accel-speed 0.0
     }
+
+    // niri's built-in power key handling takes a logind handle-power-key
+    // inhibitor at session start and suspends on every power key press
+    // (hardcoded, config binds cannot override it). Disable it so the
+    // XF86PowerOff bind below (session save, then power off) gets the key
+    // instead; systemd-logind's own handling is ignored for short presses
+    // through the shipped /etc/systemd/logind.conf.d/10-gregos-power-button
+    // drop-in. Suspend stays available through Noctalia (session panel, lock
+    // screen); bind XF86Suspend here if you want it on a key.
+    disable-power-key-handling
 }
 
 cursor {
@@ -94,6 +104,29 @@ binds {
 
     // Program shortcuts
     Mod+T { spawn "blackbox-terminal"; }
+
+    // Session resume (niri-resume, see the spawn-at-startup "restore" entry
+    // below): these run the tool's save-* commands, which write the session
+    // snapshot first and only then perform the action. The "||" fallbacks
+    // keep the bind's contract if niri-resume ever fails to save (a broken
+    // IPC, a full disk): plain quit / poweroff still happen, they just skip
+    // the snapshot.
+    //
+    // niri's default config binds Mod+Shift+E and Ctrl+Alt+Delete to plain
+    // quit; this standalone config does not include it, so these binds add
+    // the conventional escape keys with save semantics.
+    Mod+Shift+E { spawn-sh "niri-resume save-quit || niri msg action quit"; }
+    Ctrl+Alt+Delete { spawn-sh "niri-resume save-quit || niri msg action quit"; }
+
+    // The physical power button. niri's hardcoded power key handling is
+    // disabled above, and logind ignores short presses
+    // (10-gregos-power-button.conf), so this bind is the one handler. It
+    // works while the session is locked too (allow-when-locked): the
+    // snapshot records the same running session and the machine powers off.
+    // Outside a niri session (the greeter, a TTY) nothing binds the key and
+    // a short press does nothing; logind's long-press fallback powers the
+    // machine off instead.
+    XF86PowerOff allow-when-locked=true { spawn-sh "niri-resume save-shutdown || systemctl poweroff"; }
 }
 
 layout {
@@ -149,5 +182,15 @@ spawn-at-startup "/usr/libexec/gregos/niri-display-setup"
 // for Xwayland apps (XMODIFIERS=@im=ibus selects the XIM path).
 spawn-at-startup "ibus-daemon" "-drx"
 spawn-at-startup "noctalia"
+
+// Session resume: replays the apps that were open when the previous session
+// ended. The session-ending actions themselves run the tool first - Noctalia's
+// Log out / Shut down / Reboot are overridden with "niri-resume save-*"
+// commands (shipped in 15-gregos-session-actions.toml next to the other
+// Noctalia defaults) - and the snapshot is written before the action fires, so
+// there is no race. Started last in the startup sequence, so the shell and
+// portals are already coming up when the recorded apps are relaunched and
+// their windows re-placed.
+spawn-at-startup "niri-resume" "restore"
 
 include "noctalia.kdl"
