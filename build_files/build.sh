@@ -818,10 +818,10 @@ if [[ "${BASE_IMAGE:-}" == *nvidia* ]]; then
 EOF
 
     # Nix applications on non-NixOS resolve their GLX vendor through libglvnd.
-    # Their driver environment is /run/opengl-driver (built into the image and
-    # linked by gregos-nix-graphics.service); tell the Nix Xwayland path to use
-    # the NVIDIA vendor. Wayland EGL selects the NVIDIA vendor JSON
-    # (10_nvidia.json) automatically from that directory.
+    # The host driver bundle is linked at /run/opengl-driver by
+    # gregos-nix-graphics.service; tell the Nix Xwayland path to use the
+    # NVIDIA vendor. Wayland EGL picks 10_nvidia.json from that directory
+    # through the __EGL_VENDOR_LIBRARY_FILENAMES set by the bundle build.
     if ! grep -q '^__GLX_VENDOR_LIBRARY_NAME=' /etc/environment 2>/dev/null; then
         printf '%s\n' '__GLX_VENDOR_LIBRARY_NAME=nvidia' >> /etc/environment
     fi
@@ -1096,185 +1096,171 @@ for unit in snapd.socket var-lib-snapd-snap.mount var-snap.mount; do
     fi
 done
 
-### Determinate Nix
+### Nix
 ##
-## Determinate Nix is layered into the image as a baked seed instead of an
-## RPM. Its store must be writable and persistent, which the immutable root
-## cannot provide, so:
+## Nix comes from Fedora's official packages (nix-core, nix-system,
+## nix-filesystem, nix-libs, plus nix-daemon and nix-legacy). The binaries and
+## the daemon live in /usr and are updated with the image; no Nix store paths
+## are baked into the image at build time.
 ##
-##   - the Containerfile's nix-seed stage installs Determinate Nix into the
-##     build container, preinstalls the FlakeHub CLI fh, and builds the
-##     graphics driver environment;
-##   - this image carries the finished /nix tree under /usr/share/gregos/
-##     nix-seed (plus determinate-nixd and the SELinux policy);
-##   - on first boot gregos-nix-seed.service copies the seed onto
-##     /var/home/nix, the backing directory from Determinate's ostree planner;
-##   - nix.mount bind-mounts /var/home/nix over /nix, so Nix sees its normal
-##     store path while the data stays in persistent /var.
+## The store itself still has to be writable and persistent, which the
+## immutable deployment root cannot provide, so:
 ##
-## /var/home/nix is deliberate: it matches what Determinate's own ostree
-## planner uses on Bazzite/Silverblue, so an existing manual installation is
-## detected and reused instead of being overwritten. That keeps existing
-## packages and fh working.
+##   - nix.mount bind-mounts /var/home/nix over /nix;
+##   - gregos-nix-store.service runs nix-store --init on that mount before the
+##     daemon socket starts, creating /nix/store and /nix/var/nix on first
+##     boot;
+##   - nix-daemon.socket is enabled and activates the stock nix-daemon.
 ##
-## Only the Nix daemon, the FlakeHub CLI, the graphics driver environment and
-## this mounting/seed plumbing are system-level. Users install everything else
-## through flakes, nix profile or Home Manager, exactly as on any other Nix
-## installation.
+## Graphics and compute are independent of Nix: the image build copies the host
+## GPU driver stack into /usr/lib/gregos/nix-graphics, and
+## gregos-nix-graphics.service links it at /run/opengl-driver on every boot.
+## Nix apps therefore use the exact kernel-matched host drivers (Mesa, NVIDIA,
+## CUDA, ROCm, Level Zero/OpenCL) without a per-app wrapper.
+##
+## Only the daemon, its persistent store and the host graphics/compute bundle
+## are system-level. Users install everything else through flakes, nix profile
+## or Home Manager, exactly as on any other Nix installation.
 ##
 ## The image owns the runtime wiring:
-##   - nix-daemon.service/socket and determinate-nixd.socket (Determinate's
-##     own units, with ExecStart pointing at /usr/local/bin/determinate-nixd)
-##   - gregos-nix-seed.service (first-boot copy and image-update sync)
+##   - gregos-nix-store.service (creates the store before the daemon starts)
+##   - nix.mount / var-home-nix.service (persistent store at /var/home/nix)
+##   - nix-daemon.socket (enabled; nix-daemon.service is socket-activated)
 ##   - gregos-nix-graphics.service (links /run/opengl-driver at boot)
-##   - gregos-nix-selinux.service (loads the embedded policy if the build
-##     environment could not)
-##   - gregos-nix.conf sysusers/tmpfiles, /etc/nix/nix.custom.conf and the
-##     shell/environment.d profile wiring
 
-# Fedora 44+ ships nix and nix-daemon RPMs. If a future base image starts
-# carrying them, they would fight this installation for /nix, the daemon
-# socket and the systemd units. Fail loudly instead of producing a broken
-# mixed install.
-for nix_rpm in nix nix-daemon nix-filesystem; do
-    if rpm -q "${nix_rpm}" >/dev/null 2>&1; then
-        echo "the base image now ships Fedora's ${nix_rpm} package; refusing to mix it with Determinate Nix" >&2
+# nix-core ships the CLI and nix.conf, nix-system the store layout and nixbld
+# users, nix-legacy nix-store/nix-env. The nix metapackage pulls core+system.
+dnf5 install -y nix nix-daemon nix-legacy
+
+for nix_package in nix nix-daemon nix-legacy nix-core nix-system nix-filesystem; do
+    if ! rpm -q "${nix_package}" >/dev/null 2>&1; then
+        echo "the ${nix_package} package is missing after installation" >&2
         exit 1
     fi
 done
 
-# The seed paths are produced by the Containerfile's nix-seed stage. A
-# missing piece here would surface as "nix: command not found" or a daemon
-# that cannot start after the first boot, so check every runtime input.
-for nix_seed_path in \
-    /usr/share/gregos/nix-seed/store \
-    /usr/share/gregos/nix-seed/var/nix/profiles/default \
-    /usr/share/gregos/nix-seed/gregos/graphics-drivers-path \
-    /usr/share/gregos/nix-seed/gregos/fh-path \
-    /usr/share/gregos/nix-seed/gregos/seed-version \
-    /usr/share/gregos/nix/determinate-nixd \
-    /usr/share/gregos/nix/selinux/determinate-nix.pp \
-    /etc/nix/nix.conf \
-    /etc/nix/nix.custom.conf; do
-    if [[ ! -e "${nix_seed_path}" && ! -L "${nix_seed_path}" ]]; then
-        echo "Determinate Nix seed file is missing: ${nix_seed_path}" >&2
+if ! nix --version | grep -q '^nix (Nix) '; then
+    echo "the installed nix is not the official implementation" >&2
+    nix --version >&2
+    exit 1
+fi
+
+# Fedora's nix.conf already enables flakes, the nixpkgs flake path and the
+# Fedora CA bundle. Trust wheel members so administrating the shared store
+# works as expected.
+if ! grep -q '^trusted-users[[:space:]]*=' /etc/nix/nix.conf; then
+    printf '%s\n' 'trusted-users = root @wheel' >> /etc/nix/nix.conf
+fi
+
+for nix_pattern in \
+    '^experimental-features[[:space:]]*=.*\bflakes\b' \
+    '^experimental-features[[:space:]]*=.*\bnix-command\b' \
+    '^ssl-cert-file[[:space:]]*=.*/etc/pki/ca-trust/extracted/pem/tls-ca-bundle\.pem$' \
+    '^trusted-users[[:space:]]*=[[:space:]]*root @wheel$'; do
+    if ! grep -Eq "${nix_pattern}" /etc/nix/nix.conf; then
+        echo "/etc/nix/nix.conf does not match ${nix_pattern}" >&2
         exit 1
     fi
 done
 
-# The profile symlink points at /nix/store/... and therefore cannot be
-# followed inside the image build (the seed is under /usr/share/gregos), so
-# verify the store contents the profile will resolve to at runtime.
-if ! compgen -G "/usr/share/gregos/nix-seed/store/*-determinate-nix-*" >/dev/null; then
-    echo "the Determinate Nix package is missing from the baked seed" >&2
-    exit 1
-fi
-if ! compgen -G "/usr/share/gregos/nix-seed/store/*-fh" >/dev/null; then
-    echo "the fh package is missing from the baked seed" >&2
+if [[ ! -r /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem ]]; then
+    echo "the Fedora CA bundle required by Nix is missing" >&2
     exit 1
 fi
 
-# /nix must exist in the image as the mount point for nix.mount. It is empty:
-# the real store is the seed copied to /var/home/nix on first boot.
+# /nix is the mount point for nix.mount. Anything written below it here would
+# be hidden by the bind mount, so only the empty directory is part of the
+# image; the store is initialised on the persistent backing directory at boot.
 mkdir -p /nix
 if [[ ! -d /nix ]]; then
-    echo "/nix could not be created as the Determinate Nix mount point" >&2
+    echo "/nix could not be created as the Nix mount point" >&2
     exit 1
 fi
 
-# The baked store records the nixbld group (GID 30000) on every path. Create
-# the users/groups in the image /etc now so ownership resolves in the built
-# image; gregos-nix.conf also does this through systemd-sysusers at boot.
-if ! command -v systemd-sysusers >/dev/null 2>&1; then
-    echo "systemd-sysusers is missing; cannot create the Nix build users" >&2
+# nix-system ships sysusers.d/nix.conf and creates the build users when the
+# package is installed. Verify them so the daemon's build-users-group resolves.
+if ! getent group nixbld >/dev/null 2>&1; then
+    echo "the nixbld group was not created by the nix-system package" >&2
     exit 1
 fi
-systemd-sysusers --root=/ /usr/lib/sysusers.d/gregos-nix.conf
-if ! grep -q '^nixbld:' /etc/group; then
-    echo "the nixbld group was not created by systemd-sysusers" >&2
-    exit 1
-fi
-if ! grep -q '^nixbld1:' /etc/passwd || ! grep -q '^nixbld32:' /etc/passwd; then
-    echo "the nixbld build users were not created by systemd-sysusers" >&2
-    exit 1
-fi
-
-# SELinux: the policy labels /nix/store, the daemon sockets and
-# /usr/local/bin/determinate-nixd. Installing it at build time means the
-# first boot does not need to rebuild the policy. If the build environment has
-# no SELinux mounted (some CI runners), gregos-nix-selinux.service installs
-# the same file on the deployed enforcing system.
-if [[ -d /sys/fs/selinux ]]; then
-    if ! command -v semodule >/dev/null 2>&1; then
-        echo "semodule is missing; cannot install the Determinate Nix SELinux policy" >&2
+for nix_build_user in nixbld-1 nixbld-10; do
+    if ! getent passwd "${nix_build_user}" >/dev/null 2>&1; then
+        echo "the ${nix_build_user} build user was not created by the nix-system package" >&2
         exit 1
     fi
-    if ! semodule -l | awk '{ print $1 }' | grep -qx nix; then
-        semodule -i /usr/share/gregos/nix/selinux/determinate-nix.pp
-    fi
-else
-    echo "SELinux is not mounted in the build environment; the first-boot service will install the Nix policy"
-fi
+done
 
-# Determinate Nix owns nix.conf and replaces it on updates. Our settings live
-# in nix.custom.conf, which the generated file includes; verify both halves so
-# a future change cannot silently drop the CA bundle or wheel trust.
-if ! grep -qF '!include nix.custom.conf' /etc/nix/nix.conf; then
-    echo "/etc/nix/nix.conf does not include nix.custom.conf" >&2
-    exit 1
-fi
-for nix_custom_setting in \
-    'trusted-users = root @wheel' \
-    'ssl-cert-file = /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'; do
-    if ! grep -qF "${nix_custom_setting}" /etc/nix/nix.custom.conf; then
-        echo "'${nix_custom_setting}' is missing from /etc/nix/nix.custom.conf" >&2
+for nix_binary in /usr/bin/nix /usr/bin/nix-store /usr/bin/nix-daemon /usr/libexec/gregos/nix-store; do
+    if [[ ! -x "${nix_binary}" ]]; then
+        echo "required Nix binary is missing or not executable: ${nix_binary}" >&2
+        exit 1
+    fi
+done
+for nix_unit_file in \
+    /usr/lib/systemd/system/nix-daemon.service \
+    /usr/lib/systemd/system/nix-daemon.socket \
+    /usr/lib/systemd/system/gregos-nix-store.service; do
+    if [[ ! -r "${nix_unit_file}" ]]; then
+        echo "required Nix unit file is missing: ${nix_unit_file}" >&2
         exit 1
     fi
 done
 
 # PAM sessions (including niri) get their environment from /etc/environment;
 # systemd user services use environment.d. Both need the Fedora CA bundle
-# because Nix would otherwise fall back to a path that is not present here.
+# because Fedora's Nix profile scripts look for /etc/pki/tls/certs/ca-bundle.crt,
+# which this image does not ship.
 if ! grep -q '^NIX_SSL_CERT_FILE=' /etc/environment 2>/dev/null; then
     printf '%s\n' 'NIX_SSL_CERT_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' >> /etc/environment
 fi
 
-# The NVIDIA variants must carry a seed built with the host-matching NVIDIA
-# userspace driver. Catch a seed that was accidentally built as Mesa-only.
-nix_seed_version="$(cat /usr/share/gregos/nix-seed/gregos/seed-version)"
-if [[ "${BASE_IMAGE:-}" == *nvidia* && "${nix_seed_version}" != *-nvidia-* ]]; then
-    echo "NVIDIA base image detected but the Nix seed has no NVIDIA driver environment (${nix_seed_version})" >&2
+# Build the host graphics/compute bundle. This is deliberately an image-build
+# step, not a Nix build: it keeps the driver ABI matched to the running host
+# kernel and rejects a host driver whose glibc requirement is newer than the
+# image's own glibc. The bundle also carries the CUDA/ROCm/OpenCL/Level Zero
+# user-space libraries.
+/ctx/nix-host-graphics.sh
+
+if [[ ! -s /usr/lib/gregos/nix-graphics/libs.list ]]; then
+    echo "the host graphics bundle is empty (no /usr/lib/gregos/nix-graphics/libs.list)" >&2
     exit 1
 fi
 
-# The recorded graphics path and fh path are absolute /nix/store paths. Check
-# that they exist inside the seed under the prefixed image path (the seed's
-# /nix tree is mounted at /usr/share/gregos/nix-seed).
-nix_graphics_path="$(cat /usr/share/gregos/nix-seed/gregos/graphics-drivers-path)"
-nix_graphics_seed_path="/usr/share/gregos/nix-seed/${nix_graphics_path#/nix/}"
-if [[ ! -d "${nix_graphics_seed_path}" ]]; then
-    echo "the Nix graphics driver environment recorded in the seed does not exist: ${nix_graphics_path}" >&2
+if [[ ! -x /usr/libexec/gregos/nix-graphics ]]; then
+    echo "the host graphics linker service script is missing" >&2
     exit 1
 fi
-nix_fh_path="$(cat /usr/share/gregos/nix-seed/gregos/fh-path)"
-nix_fh_seed_path="/usr/share/gregos/nix-seed/${nix_fh_path#/nix/}"
-if [[ ! -x "${nix_fh_seed_path}" ]]; then
-    echo "the fh binary recorded in the Nix seed does not exist: ${nix_fh_path}" >&2
+
+for graphics_file in \
+    /usr/lib/environment.d/20-gregos-nix-graphics.conf \
+    /etc/profile.d/20-gregos-nix-graphics.sh; do
+    if [[ ! -r "${graphics_file}" ]]; then
+        echo "host graphics environment file is missing: ${graphics_file}" >&2
+        exit 1
+    fi
+done
+
+if ! compgen -G "/usr/lib/gregos/nix-graphics/share/vulkan/icd.d/*.json" >/dev/null; then
+    echo "the host graphics bundle contains no Vulkan ICD" >&2
+    exit 1
+fi
+
+# A CUDA-capable base must actually contribute the driver API, otherwise the
+# host bundle was built from a Mesa-only stack.
+if [[ "${BASE_IMAGE:-}" == *nvidia* ]] \
+    && ! grep -qx 'lib/libcuda.so.1' /usr/lib/gregos/nix-graphics/libs.list; then
+    echo "NVIDIA base image detected but the host graphics bundle has no libcuda.so.1" >&2
     exit 1
 fi
 
 # Enable the runtime units. nix.mount pulls in var-home-nix.service through
-# its [Install] RequiredBy=. Only the sockets are enabled: Determinate Nixd
-# expects to be started by socket activation with the Nix daemon and
-# determinate-nixd file descriptors, so nix-daemon.service must stay disabled
-# and is started by the sockets on first use.
+# its [Install] RequiredBy=. Only nix-daemon.socket is enabled: the daemon is
+# socket-activated after gregos-nix-store.service has initialised the store.
 nix_units=(
     nix.mount
-    gregos-nix-selinux.service
-    gregos-nix-seed.service
+    gregos-nix-store.service
     gregos-nix-graphics.service
     nix-daemon.socket
-    determinate-nixd.socket
 )
 for unit in "${nix_units[@]}"; do
     systemctl enable "${unit}"
@@ -1286,14 +1272,12 @@ for unit in "${nix_units[@]}"; do
     fi
 done
 
-# Determinate Nixd must be started by socket activation so systemd passes it
-# the nix-daemon and determinate-nixd file descriptors. Remove any stale
-# directly-enabled service symlink (for example from an older manual install)
-# and make sure the unit stays disabled.
+# Some Fedora presets enable nix-daemon.service directly. Keep it disabled so
+# the socket owns activation and gregos-nix-store.service stays ordered first.
 systemctl disable nix-daemon.service 2>/dev/null || true
 if systemctl is-enabled nix-daemon.service >/dev/null 2>&1; then
-    echo "nix-daemon.service must not be enabled; it is started by its sockets" >&2
+    echo "nix-daemon.service must not be enabled; it is started by nix-daemon.socket" >&2
     exit 1
 fi
 
-echo "Determinate Nix seed: ${nix_seed_version}"
+nix --version

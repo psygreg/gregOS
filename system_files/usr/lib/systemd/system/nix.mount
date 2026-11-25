@@ -1,6 +1,6 @@
 [Unit]
-Description=Bind mount the gregOS Determinate Nix store
-Documentation=https://docs.determinate.systems/determinate-nix
+Description=Bind mount the persistent Nix store
+Documentation=https://nixos.org/manual/nix/stable/installation/multi-user
 DefaultDependencies=no
 Requires=var-home-nix.service
 After=var-home-nix.service

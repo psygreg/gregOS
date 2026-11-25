@@ -1,0 +1,7 @@
+# Grant the active seat user access to GPU render/compute nodes for Nix
+# applications. Existing modes and group ownership are left untouched; uaccess
+# only adds the logind ACL for the user at the seat.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", TAG+="uaccess"
+SUBSYSTEM=="drm", KERNEL=="renderD*", TAG+="uaccess"
+SUBSYSTEM=="misc", KERNEL=="kfd", TAG+="uaccess"
+KERNEL=="nvidia*", TAG+="uaccess"

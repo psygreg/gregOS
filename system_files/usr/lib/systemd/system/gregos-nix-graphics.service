@@ -1,10 +1,9 @@
 [Unit]
-Description=Link the baked Nix graphics drivers for Nix applications
+Description=Link host graphics and compute drivers for Nix applications
 DefaultDependencies=no
-Requires=nix.mount
-After=nix.mount gregos-nix-seed.service
+After=local-fs.target
 Before=display-manager.service
-ConditionPathExists=/nix/gregos/graphics-drivers-path
+ConditionPathExists=/usr/lib/gregos/nix-graphics/libs.list
 
 [Service]
 Type=oneshot

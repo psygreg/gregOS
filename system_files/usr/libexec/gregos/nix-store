@@ -1,0 +1,70 @@
+#!/bin/bash
+#
+# Initialise the persistent Nix store mounted at /nix.
+#
+# The image ships Fedora's Nix packages but no store contents: /nix is a bind
+# mount of /var/home/nix so the store survives image updates. This service
+# runs before nix-daemon.socket and creates the local store database on first
+# boot. nix-store --init is idempotent, so the same path is safe on every boot
+# and on upgrades from an already populated store.
+
+set -euo pipefail
+
+if ! mountpoint -q /nix; then
+    echo "/nix is not a mount point; nix.mount did not run" >&2
+    exit 1
+fi
+
+if ! command -v nix-store >/dev/null 2>&1; then
+    echo "nix-store is missing; install the nix-legacy package" >&2
+    exit 1
+fi
+
+# Earlier gregOS images used Determinate Nix and created /usr/local/bin links
+# plus a system profile pointing into the store. /usr/local and /nix live on
+# /var, so they survive the switch to Fedora's Nix; left alone they would
+# shadow /usr/bin/nix with the old store copy. Remove only links into /nix,
+# never unrelated files a user may have put there.
+for tool in \
+    nix nix-build nix-channel nix-collect-garbage nix-copy-closure \
+    nix-daemon nix-env nix-hash nix-instantiate nix-prefetch-url nix-shell \
+    nix-store fh determinate-nixd; do
+    link="/usr/local/bin/${tool}"
+    if [[ -L "${link}" ]]; then
+        case "$(readlink "${link}")" in
+            /nix/*) rm -f "${link}" ;;
+        esac
+    fi
+done
+if [[ -f /usr/local/bin/determinate-nixd ]]; then
+    rm -f /usr/local/bin/determinate-nixd
+fi
+
+default_profile=/nix/var/nix/profiles/default
+if [[ -L "${default_profile}" ]]; then
+    seeded_nix="$(readlink "${default_profile}/bin/nix" 2>/dev/null || true)"
+    case "${seeded_nix}" in
+        *-determinate-nix-*)
+            # The seeded Determinate system profile; its nix/fh binaries are
+            # obsolete with the Fedora packages. Dropping it also lets the
+            # store paths be garbage-collected.
+            rm -f "${default_profile}" "${default_profile}"-*-link
+            rm -f /nix/var/nix/gcroots/gregos-nix-fh \
+                /nix/var/nix/gcroots/gregos-nix-graphics
+            rm -rf /nix/gregos
+            ;;
+    esac
+fi
+
+# Fedora's packaged tmpfiles.d entries only cover /nix when it is a plain
+# directory. With the store on a separate backing mount, create the runtime
+# directories here instead.
+install -d -m 0755 -o root -g root /nix/var/log/nix/drvs
+install -d -m 0755 -o root -g root /nix/var/nix/builds
+install -d -m 0755 -o root -g root /nix/var/nix/gc-socket
+
+# Creates /nix/store (root:nixbld, mode 1775), /nix/var/nix/db,
+# /nix/var/nix/daemon-socket and the rest of the local store layout.
+nix-store --init
+
+echo "Nix store ready at /nix"

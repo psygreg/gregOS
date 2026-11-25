@@ -1,0 +1,16 @@
+[Unit]
+Description=Initialise the persistent Nix store
+Documentation=https://nixos.org/manual/nix/stable/installation/multi-user
+DefaultDependencies=no
+Requires=nix.mount
+After=nix.mount systemd-sysusers.service
+Before=nix-daemon.service nix-daemon.socket display-manager.service
+ConditionPathExists=/usr/bin/nix-store
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gregos/nix-store
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

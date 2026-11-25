@@ -1,35 +1,48 @@
 #!/bin/bash
 #
-# Link the baked Nix graphics driver environment at /run/opengl-driver.
+# Materialise the host graphics/compute driver bundle at /run/opengl-driver.
 #
-# Nixpkgs' libglvnd and Vulkan loader look for drivers in /run/opengl-driver
-# (the NixOS convention). On a non-NixOS system this directory does not exist,
-# so Nix-built graphical applications use software rendering. The image bakes
-# a driver set built from Mesa (AMD/Intel) or the host-matching NVIDIA
-# userspace libraries into the Nix store; this service points the conventional
-# path at it on every boot (/run is volatile).
+# Nixpkgs' libglvnd and Vulkan loader look for drivers in this directory. The
+# image build creates a regular-file bundle under
+# /usr/lib/gregos/nix-graphics (libraries copied from the host GPU stack, with
+# their ELF dependency closure and RPATH patched at build time); this service
+# links that bundle into /run on every boot. /run is volatile, so the symlinks
+# are kept out of the OSTree image itself - which also avoids the chunker's
+# corrupted-symlink bug.
+#
+# The same tree exposes CUDA, ROCm, Level Zero and OpenCL vendor libraries so
+# Nix applications can use the host GPU compute stack. Device access is
+# handled by udev uaccess ACLs on /dev/dri, /dev/kfd and /dev/nvidia*.
 
 set -euo pipefail
 
-path_file=/nix/gregos/graphics-drivers-path
+bundle=/usr/lib/gregos/nix-graphics
+runtime=/run/opengl-driver
 
-if [[ ! -r "${path_file}" ]]; then
-    echo "no baked Nix graphics driver environment is recorded"
-    exit 0
-fi
-
-graphics_path="$(cat "${path_file}")"
-if [[ ! -d "${graphics_path}" ]]; then
-    echo "the recorded Nix graphics driver environment is missing: ${graphics_path}" >&2
+if [[ ! -r "${bundle}/libs.list" ]]; then
+    echo "host graphics bundle is missing: ${bundle}/libs.list" >&2
     exit 1
 fi
 
-# /run is recreated on every boot, but a previous instance or a user setup
-# could have left a real directory here; replace it rather than nesting a
-# symlink inside it.
-if [[ -e /run/opengl-driver && ! -L /run/opengl-driver ]]; then
-    rm -rf /run/opengl-driver
+rm -rf "${runtime}"
+install -d "${runtime}"
+
+while IFS= read -r rel; do
+    [[ -n "${rel}" ]] || continue
+    if [[ ! -e "${bundle}/${rel}" ]]; then
+        echo "host graphics bundle file is missing: ${bundle}/${rel}" >&2
+        exit 1
+    fi
+    install -d "$(dirname "${runtime}/${rel}")"
+    ln -sfn "${bundle}/${rel}" "${runtime}/${rel}"
+done < "${bundle}/libs.list"
+
+if [[ -d "${bundle}/share" ]]; then
+    install -d "${runtime}/share"
+    for entry in "${bundle}"/share/*; do
+        [[ -e "${entry}" ]] || continue
+        ln -sfn "${entry}" "${runtime}/share/$(basename "${entry}")"
+    done
 fi
 
-ln -sfn "${graphics_path}" /run/opengl-driver
-echo "Linked /run/opengl-driver -> ${graphics_path}"
+echo "Linked /run/opengl-driver to the host graphics/compute bundle"
