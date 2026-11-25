@@ -15,8 +15,14 @@
   outputs =
     { nixpkgs, home-manager, ... }:
     let
-      system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      # The gregOS setup helper fills this in from `uname -m` when the
+      # configuration is created (x86_64-linux, aarch64-linux, ...).
+      system = "@SYSTEM@";
+      pkgs = import nixpkgs {
+        inherit system;
+        # Allow unfree packages (Steam, VS Code, media codecs, ...) by default.
+        config.allowUnfree = true;
+      };
     in
     {
       homeConfigurations."@USER@" = home-manager.lib.homeManagerConfiguration {

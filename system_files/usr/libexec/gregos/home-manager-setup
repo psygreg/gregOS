@@ -2,9 +2,10 @@
 #
 # Create a default flake-based Home Manager configuration for the current user.
 #
-# The templates live in /usr/share/gregos/home-manager. @USER@, @HOME@ and
-# @REF@ are substituted here so each user gets a configuration that matches
-# their account and the Home Manager branch the image tracks.
+# The templates live in /usr/share/gregos/home-manager. @USER@, @HOME@,
+# @REF@ and @SYSTEM@ are substituted here so each user gets a configuration
+# that matches their account, the Home Manager branch the image tracks and the
+# machine's Nix system.
 
 set -euo pipefail
 
@@ -19,6 +20,27 @@ config_dir="${config_home}/home-manager"
 state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
 ref="$(cat "${template_dir}/ref")"
 user="$(id -un)"
+
+# Nix system string for this machine. GREGOS_NIX_SYSTEM overrides the detected
+# value for unusual setups (for example a 32-bit userland on a 64-bit kernel).
+system="${GREGOS_NIX_SYSTEM:-}"
+if [[ -z "${system}" ]]; then
+    machine_arch="$(uname -m)"
+    case "${machine_arch}" in
+        x86_64|amd64)     system=x86_64-linux ;;
+        aarch64|arm64)    system=aarch64-linux ;;
+        i?86)             system=i686-linux ;;
+        armv7l|armv7)     system=armv7l-linux ;;
+        ppc64le)          system=powerpc64le-linux ;;
+        riscv64)          system=riscv64-linux ;;
+        s390x)            system=s390x-linux ;;
+        *)
+            echo "unsupported machine architecture: ${machine_arch}" >&2
+            echo "set GREGOS_NIX_SYSTEM to the Nix system string to use" >&2
+            exit 1
+            ;;
+    esac
+fi
 
 install -d -m 0755 "${config_dir}"
 # Home Manager uses the per-user profile directory when it exists and falls
@@ -35,8 +57,9 @@ for file in flake.nix home.nix; do
         -e "s|@USER@|${user}|g" \
         -e "s|@HOME@|${HOME}|g" \
         -e "s|@REF@|${ref}|g" \
+        -e "s|@SYSTEM@|${system}|g" \
         "${template_dir}/${file}" > "${config_dir}/${file}"
-    echo "Created ${config_dir}/${file}"
+    echo "Created ${config_dir}/${file} (${system})"
 done
 
 echo "Run 'home-manager switch' to activate ${config_dir}"

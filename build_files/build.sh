@@ -1152,11 +1152,6 @@ if [[ ! -x /usr/bin/busybox ]]; then
     echo "busybox is missing; Nix's sandbox shell is /usr/bin/busybox" >&2
     exit 1
 fi
-sandbox_paths="$(HOME=/tmp nix config show 2>/dev/null | awk -F ' = ' '$1 == "sandbox-paths" { print $2 }')"
-if [[ "${sandbox_paths}" != */usr/bin/busybox* ]]; then
-    echo "Nix's sandbox-paths (${sandbox_paths}) do not point at /usr/bin/busybox" >&2
-    exit 1
-fi
 
 if ! nix --version | grep -q '^nix (Nix) '; then
     echo "the installed nix is not the official implementation" >&2
@@ -1164,20 +1159,34 @@ if ! nix --version | grep -q '^nix (Nix) '; then
     exit 1
 fi
 
-# Fedora's nix.conf already enables flakes, the nixpkgs flake path and the
-# Fedora CA bundle. Trust wheel members so administrating the shared store
-# works as expected.
-if ! grep -q '^trusted-users[[:space:]]*=' /etc/nix/nix.conf; then
-    printf '%s\n' 'trusted-users = root @wheel' >> /etc/nix/nix.conf
+# gregOS settings live in /etc/nix/nix.custom.conf (shipped in system_files);
+# the RPM-owned /etc/nix/nix.conf gets one include line so they survive package
+# updates.
+if ! grep -q '^include[[:space:]]\+nix\.custom\.conf$' /etc/nix/nix.conf; then
+    printf '%s\n' 'include nix.custom.conf' >> /etc/nix/nix.conf
+fi
+if [[ ! -r /etc/nix/nix.custom.conf ]]; then
+    echo "/etc/nix/nix.custom.conf is missing" >&2
+    exit 1
+fi
+
+nix_config="$(HOME=/tmp nix config show 2>/dev/null)"
+sandbox_paths="$(awk -F ' = ' '$1 == "sandbox-paths" { print $2 }' <<<"${nix_config}")"
+if [[ "${sandbox_paths}" != */usr/bin/busybox* ]]; then
+    echo "Nix's sandbox-paths (${sandbox_paths}) do not point at /usr/bin/busybox" >&2
+    exit 1
 fi
 
 for nix_pattern in \
-    '^experimental-features[[:space:]]*=.*\bflakes\b' \
-    '^experimental-features[[:space:]]*=.*\bnix-command\b' \
-    '^ssl-cert-file[[:space:]]*=.*/etc/pki/ca-trust/extracted/pem/tls-ca-bundle\.pem$' \
-    '^trusted-users[[:space:]]*=[[:space:]]*root @wheel$'; do
-    if ! grep -Eq "${nix_pattern}" /etc/nix/nix.conf; then
-        echo "/etc/nix/nix.conf does not match ${nix_pattern}" >&2
+    '^experimental-features = .*flakes' \
+    '^experimental-features = .*nix-command' \
+    '^auto-optimise-store = true$' \
+    '^substituters = .*https://nix-community\.cachix\.org' \
+    '^trusted-public-keys = .*nix-community\.cachix\.org-1:' \
+    '^trusted-users = root @wheel$' \
+    '^ssl-cert-file = .*/etc/pki/ca-trust/extracted/pem/tls-ca-bundle\.pem$'; do
+    if ! grep -Eq "${nix_pattern}" <<<"${nix_config}"; then
+        echo "the effective Nix configuration does not match ${nix_pattern}" >&2
         exit 1
     fi
 done
@@ -1245,10 +1254,23 @@ done
 # PAM sessions (including niri) get their environment from /etc/environment;
 # systemd user services use environment.d. Both need the Fedora CA bundle
 # because Fedora's Nix profile scripts look for /etc/pki/tls/certs/ca-bundle.crt,
-# which this image does not ship.
-if ! grep -q '^NIX_SSL_CERT_FILE=' /etc/environment 2>/dev/null; then
-    printf '%s\n' 'NIX_SSL_CERT_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' >> /etc/environment
-fi
+# which this image does not ship. NIXPKGS_ALLOW_UNFREE makes the default
+# unfree policy explicit for impure evaluation.
+for nix_environment in \
+    'NIX_SSL_CERT_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' \
+    'NIXPKGS_ALLOW_UNFREE=1'; do
+    nix_environment_key="${nix_environment%%=*}"
+    if ! grep -q "^${nix_environment_key}=" /etc/environment 2>/dev/null; then
+        printf '%s\n' "${nix_environment}" >> /etc/environment
+    fi
+done
+
+for nix_environment_file in /etc/environment /usr/lib/environment.d/10-gregos-nix.conf; do
+    if ! grep -q '^NIXPKGS_ALLOW_UNFREE=1$' "${nix_environment_file}"; then
+        echo "${nix_environment_file} does not allow unfree packages" >&2
+        exit 1
+    fi
+done
 
 # Build the host graphics/compute bundle. This is deliberately an image-build
 # step, not a Nix build: it keeps the driver ABI matched to the running host

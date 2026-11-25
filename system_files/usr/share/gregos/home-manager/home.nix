@@ -28,8 +28,20 @@
   # Home Manager manages its own generations once the first one is active.
   programs.home-manager.enable = true;
 
+  # Reclaim space from generations older than two weeks once a week. The store
+  # itself is already hard-link optimised by the daemon
+  # (auto-optimise-store); this removes the profile entries that keep old
+  # package sets alive and then collects the unreferenced store paths.
+  nix.gc = {
+    automatic = true;
+    dates = "weekly";
+    options = "--delete-older-than 14d";
+  };
+
   # Declare user packages here, then run `home-manager switch`.
-  # Removing a line and switching again removes the package.
+  # Removing a line and switching again removes the package. The flake sets
+  # up nixpkgs for this machine's architecture and allows unfree packages by
+  # default, so entries like pkgs.vscode or pkgs.steam work here.
   home.packages = [
     # pkgs.hello
   ];

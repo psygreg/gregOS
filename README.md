@@ -432,8 +432,8 @@ bundle are system-level; packages and development environments are user-level fl
   `nix-system`, `nix-filesystem` and `nix-libs`). The binaries and daemon live in `/usr` and are updated
   with the image; no Nix store paths are baked into the image at build time.
 - **A Home Manager launcher** — `/usr/bin/home-manager`, tracking Home Manager's `master` branch and
-  locking the flake inputs on the first switch, with a default configuration seeded automatically. See
-  [Home Manager](#home-manager).
+  locking the flake inputs on the first switch, with a default configuration seeded automatically for
+  the machine's architecture and with unfree packages allowed. See [Home Manager](#home-manager).
 - **Persistent store at `/var/home/nix`**, bind-mounted at `/nix` by `nix.mount`. The backing directory
   survives image updates and rollbacks; `/nix` itself is only the mount point.
 - **First-boot store initialisation** — `gregos-nix-store.service` runs `nix-store --init` on the
@@ -448,8 +448,10 @@ bundle are system-level; packages and development environments are user-level fl
   `busybox` so builds that are not available from the binary cache still work.
 - **Flakes out of the box** — Fedora's `/etc/nix/nix.conf` sets
   `experimental-features = nix-command flakes`, `extra-nix-path = nixpkgs=flake:nixpkgs` and the Fedora
-  CA bundle. gregOS adds `trusted-users = root @wheel` so wheel administrators can manage the shared
-  store.
+  CA bundle.
+- **Configuration** — gregOS settings live in `/etc/nix/nix.custom.conf`, which the packaged nix.conf
+  includes: `trusted-users = root @wheel`, `auto-optimise-store = true` (hard-link identical store
+  files), and the `nix-community.cachix.org` binary cache with its verified signing key.
 - **Shell and session wiring** — Fedora's `/etc/profile.d/nix.sh` and `nix-daemon.sh` add the user and
   system profiles to `PATH` and `XDG_DATA_DIRS`; `/etc/environment` and
   `/usr/lib/environment.d/10-gregos-nix.conf` point `NIX_SSL_CERT_FILE` at the Fedora CA bundle because
@@ -470,6 +472,33 @@ nix develop                   # per-project development shell
 `nix shell nixpkgs#…` and `nix profile add nixpkgs#…` work without adding a channel. Pin a revision in
 your own flake when you need reproducibility.
 
+Non-free software is allowed by default. The image exports `NIXPKGS_ALLOW_UNFREE=1`, and the shipped
+Home Manager flake imports nixpkgs with `allowUnfree = true`. Flake evaluation is pure, so ad-hoc
+imperative commands need `--impure` for the variable to apply:
+
+```bash
+nix profile install --impure nixpkgs#slack
+```
+
+### Binary caches and store maintenance
+
+`cache.nixos.org` stays the primary substituter. The image also trusts the `nix-community.cachix.org`
+Cachix cache, which carries Home Manager and other community builds that Nixpkgs' cache does not.
+Wheel members can add another Cachix cache system-wide in `/etc/nix/nix.custom.conf`:
+
+```ini
+extra-substituters = https://my-cache.cachix.org
+extra-trusted-public-keys = my-cache.cachix.org-1:...
+```
+
+The signing key is shown on the cache's Cachix page (or returned by
+`https://my-cache.cachix.org/api/v1/cache/my-cache`).
+
+`auto-optimise-store` is enabled, so the daemon hard-links identical files between store paths as
+builds finish; old generations then cost little beyond their profile symlink. The default Home Manager
+configuration also runs a weekly `nix-collect-garbage --delete-older-than 14d` to remove old
+generations and the store paths they keep alive.
+
 Home Manager and flakes use the same system daemon. The image ships a `home-manager` launcher and a
 default configuration; see [Home Manager](#home-manager) below.
 
@@ -489,8 +518,25 @@ with the current user and home directory filled in:
 
 - `flake.nix` follows `nixpkgs-unstable` and Home Manager `master`, so package versions and glibc match
   the `nixpkgs` the image exposes through the flake registry (and the host drivers built against it);
+  it also targets the machine's detected Nix system and imports nixpkgs with `allowUnfree = true`;
 - `home.nix` enables `targets.genericLinux`, `programs.home-manager` and starts with an empty
   `home.packages` list.
+
+The setup helper maps `uname -m` to the matching Nix system string (`x86_64-linux`, `aarch64-linux`,
+`i686-linux`, `armv7l-linux`, `powerpc64le-linux`, `riscv64-linux`, `s390x-linux`) and fills it into the
+flake. `GREGOS_NIX_SYSTEM` overrides the detection for unusual setups. Existing configurations are never
+rewritten: if yours still has a hard-coded `system = "x86_64-linux";` from an older image, change it to
+your architecture or remove `~/.config/home-manager/flake.nix` and let the next switch recreate it.
+
+Non-free software is allowed by default: the generated flake imports nixpkgs with
+`config.allowUnfree = true`, and the image exports `NIXPKGS_ALLOW_UNFREE=1`. Flake evaluation is pure, so
+ad-hoc imperative commands need `--impure` for that variable to take effect:
+
+```bash
+nix profile install --impure nixpkgs#slack   # unfree package outside Home Manager
+```
+
+Packages declared under `home.packages` need no flag.
 
 `nix flake update` in that directory moves the locked revisions; `home-manager switch` applies them.
 
@@ -503,6 +549,10 @@ home-manager switch                  # build and activate ~/.config/home-manager
 home-manager generations             # list generations
 home-manager switch --rollback       # return to the previous generation
 ```
+
+The default configuration enables `nix.gc` (weekly, deleting generations older than 14 days) so old
+package sets and the store paths they keep alive are reclaimed; adjust `nix.gc.options` or
+`nix.gc.dates` to keep more history.
 
 `targets.genericLinux.gpu` is deliberately disabled in the default configuration. gregOS already links
 the host GPU stack at `/run/opengl-driver` and exports the loader variables system-wide; Home Manager's
@@ -584,7 +634,8 @@ not copied. 32-bit host applications continue to use the host stack directly.
   `nix profile rollback`/generations handle package-level rollbacks. An image rollback reverts the Nix
   binaries but not the shared store or its database.
 - Home Manager generations live per-user under `~/.local/state/nix/profiles` and are unaffected by image
-  updates.
+  updates. `auto-optimise-store` hard-links identical store files, and the default weekly
+  `nix-collect-garbage --delete-older-than 14d` removes older generations and their unreferenced paths.
 - Image updates replace the host graphics/compute bundle under `/usr/lib/gregos/nix-graphics`;
   `gregos-nix-graphics.service` recreates `/run/opengl-driver` from it on the next boot. This does not
   touch `/nix` at all.
