@@ -431,15 +431,21 @@ bundle are system-level; packages and development environments are user-level fl
 - **Nix 2.35.6 from Fedora** — `nix`, `nix-daemon` and `nix-legacy` (pulling in `nix-core`,
   `nix-system`, `nix-filesystem` and `nix-libs`). The binaries and daemon live in `/usr` and are updated
   with the image; no Nix store paths are baked into the image at build time.
+- **A Home Manager launcher** — `/usr/bin/home-manager`, tracking Home Manager's `master` branch and
+  locking the flake inputs on the first switch, with a default configuration seeded automatically. See
+  [Home Manager](#home-manager).
 - **Persistent store at `/var/home/nix`**, bind-mounted at `/nix` by `nix.mount`. The backing directory
   survives image updates and rollbacks; `/nix` itself is only the mount point.
 - **First-boot store initialisation** — `gregos-nix-store.service` runs `nix-store --init` on the
-  mounted store before `nix-daemon.socket` starts, creating `/nix/store`, `/nix/var/nix` and the local
+  mounted store before `nix-daemon.service` starts, creating `/nix/store`, `/nix/var/nix` and the local
   database. The command is idempotent, so later boots are a no-op and an existing store is reused.
-- **The stock daemon** — `nix-daemon.socket` is enabled and activates Fedora's `nix-daemon.service`;
-  the service itself is deliberately not enabled.
+- **The stock daemon** — `nix-daemon.service` is enabled and creates the daemon socket itself.
+  Fedora's `nix-daemon.socket` is masked: systemd creates socket files in the confined `init_t` domain
+  and SELinux does not allow that inside the store, while the daemon service runs unconfined.
 - **Build users** — Fedora's `nix-system` package creates the `nixbld` group and `nixbld-1` …
   `nixbld-10` through `sysusers.d/nix.conf`.
+- **Sandbox shell** — Fedora's Nix uses `/usr/bin/busybox` as the sandbox `/bin/sh`; the image installs
+  `busybox` so builds that are not available from the binary cache still work.
 - **Flakes out of the box** — Fedora's `/etc/nix/nix.conf` sets
   `experimental-features = nix-command flakes`, `extra-nix-path = nixpkgs=flake:nixpkgs` and the Fedora
   CA bundle. gregOS adds `trusted-users = root @wheel` so wheel administrators can manage the shared
@@ -464,16 +470,50 @@ nix develop                   # per-project development shell
 `nix shell nixpkgs#…` and `nix profile add nixpkgs#…` work without adding a channel. Pin a revision in
 your own flake when you need reproducibility.
 
-Home Manager and flakes use the same system daemon; install Home Manager in the usual user-level way,
-for example:
-
-```bash
-nix run home-manager/master -- switch --flake .#your-hostname
-```
+Home Manager and flakes use the same system daemon. The image ships a `home-manager` launcher and a
+default configuration; see [Home Manager](#home-manager) below.
 
 Only the Nix daemon, the store and the host graphics/compute bundle ship in the image. Everything else
 is installed by the user through `nix profile`, `nix develop` or Home Manager, which is why image
 updates never fight user packages.
+
+## Home Manager
+
+`/usr/bin/home-manager` is a launcher tracking Home Manager's `master` branch. Home Manager itself is
+not baked into the image: it is fetched into the shared Nix store on first use through the daemon, so a
+normal user can use it without root and later users reuse the cached copy. The first `home-manager
+switch` writes a `flake.lock` that pins the exact Home Manager and nixpkgs revisions.
+
+The first `home-manager switch` also seeds `~/.config/home-manager` from `/usr/share/gregos/home-manager`
+with the current user and home directory filled in:
+
+- `flake.nix` follows `nixpkgs-unstable` and Home Manager `master`, so package versions and glibc match
+  the `nixpkgs` the image exposes through the flake registry (and the host drivers built against it);
+- `home.nix` enables `targets.genericLinux`, `programs.home-manager` and starts with an empty
+  `home.packages` list.
+
+`nix flake update` in that directory moves the locked revisions; `home-manager switch` applies them.
+
+Add packages under `home.packages` and run `home-manager switch`; remove a line and switch again to
+remove the package. Builds run through the daemon as the unprivileged `nixbld` users, so no root is
+involved. Generations live in `~/.local/state/nix/profiles`:
+
+```bash
+home-manager switch                  # build and activate ~/.config/home-manager
+home-manager generations             # list generations
+home-manager switch --rollback       # return to the previous generation
+```
+
+`targets.genericLinux.gpu` is deliberately disabled in the default configuration. gregOS already links
+the host GPU stack at `/run/opengl-driver` and exports the loader variables system-wide; Home Manager's
+`gpu` module would instead build a second, Nix-owned driver set and require `sudo` to activate it, which
+would replace the kernel-matched host drivers until the next boot. Nix applications, including those
+installed by Home Manager, use the host bundle unchanged.
+
+`nix profile add nixpkgs#…` and `nix profile remove …` also work without root, for imperative use.
+Home Manager and `nix profile` both manage `~/.nix-profile`; use one of them for a given profile. If
+packages were already added imperatively, remove them before the first `home-manager switch` (or use a
+separate `nix profile --profile`), otherwise activation stops on a file conflict.
 
 ## Graphics and compute acceleration
 
@@ -543,6 +583,8 @@ not copied. 32-bit host applications continue to use the host stack directly.
   to upgrade. User packages are upgraded with `nix profile upgrade --all` or by Home Manager, and
   `nix profile rollback`/generations handle package-level rollbacks. An image rollback reverts the Nix
   binaries but not the shared store or its database.
+- Home Manager generations live per-user under `~/.local/state/nix/profiles` and are unaffected by image
+  updates.
 - Image updates replace the host graphics/compute bundle under `/usr/lib/gregos/nix-graphics`;
   `gregos-nix-graphics.service` recreates `/run/opengl-driver` from it on the next boot. This does not
   touch `/nix` at all.

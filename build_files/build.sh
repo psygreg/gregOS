@@ -1108,9 +1108,13 @@ done
 ##
 ##   - nix.mount bind-mounts /var/home/nix over /nix;
 ##   - gregos-nix-store.service runs nix-store --init on that mount before the
-##     daemon socket starts, creating /nix/store and /nix/var/nix on first
-##     boot;
-##   - nix-daemon.socket is enabled and activates the stock nix-daemon.
+##     daemon starts, creating /nix/store and /nix/var/nix on first boot;
+##   - nix-daemon.service is enabled and creates its own socket (Fedora's
+##     socket unit runs in a confined domain that cannot bind inside /nix).
+##
+## Users install and remove packages without root through `nix profile` or the
+## shipped Home Manager launcher, which builds per-user profiles through the
+## daemon.
 ##
 ## Graphics and compute are independent of Nix: the image build copies the host
 ## GPU driver stack into /usr/lib/gregos/nix-graphics, and
@@ -1125,19 +1129,34 @@ done
 ## The image owns the runtime wiring:
 ##   - gregos-nix-store.service (creates the store before the daemon starts)
 ##   - nix.mount / var-home-nix.service (persistent store at /var/home/nix)
-##   - nix-daemon.socket (enabled; nix-daemon.service is socket-activated)
+##   - nix-daemon.service (enabled; creates the daemon socket itself)
 ##   - gregos-nix-graphics.service (links /run/opengl-driver at boot)
+##   - /usr/bin/home-manager plus the default flake templates under
+##     /usr/share/gregos/home-manager
 
 # nix-core ships the CLI and nix.conf, nix-system the store layout and nixbld
 # users, nix-legacy nix-store/nix-env. The nix metapackage pulls core+system.
-dnf5 install -y nix nix-daemon nix-legacy
+# Fedora's Nix uses /usr/bin/busybox as the sandbox /bin/sh; without the
+# busybox package every sandboxed build fails with
+#   error: getting attributes of path "/usr/bin/busybox"
+dnf5 install -y busybox nix nix-daemon nix-legacy
 
-for nix_package in nix nix-daemon nix-legacy nix-core nix-system nix-filesystem; do
+for nix_package in busybox nix nix-daemon nix-legacy nix-core nix-system nix-filesystem; do
     if ! rpm -q "${nix_package}" >/dev/null 2>&1; then
         echo "the ${nix_package} package is missing after installation" >&2
         exit 1
     fi
 done
+
+if [[ ! -x /usr/bin/busybox ]]; then
+    echo "busybox is missing; Nix's sandbox shell is /usr/bin/busybox" >&2
+    exit 1
+fi
+sandbox_paths="$(HOME=/tmp nix config show 2>/dev/null | awk -F ' = ' '$1 == "sandbox-paths" { print $2 }')"
+if [[ "${sandbox_paths}" != */usr/bin/busybox* ]]; then
+    echo "Nix's sandbox-paths (${sandbox_paths}) do not point at /usr/bin/busybox" >&2
+    exit 1
+fi
 
 if ! nix --version | grep -q '^nix (Nix) '; then
     echo "the installed nix is not the official implementation" >&2
@@ -1206,6 +1225,23 @@ for nix_unit_file in \
     fi
 done
 
+# Home Manager launcher and the templates used by `home-manager switch`.
+for home_manager_binary in /usr/bin/home-manager /usr/libexec/gregos/home-manager-setup; do
+    if [[ ! -x "${home_manager_binary}" ]]; then
+        echo "Home Manager helper is missing or not executable: ${home_manager_binary}" >&2
+        exit 1
+    fi
+done
+for home_manager_template in \
+    /usr/share/gregos/home-manager/flake.nix \
+    /usr/share/gregos/home-manager/home.nix \
+    /usr/share/gregos/home-manager/ref; do
+    if [[ ! -r "${home_manager_template}" ]]; then
+        echo "Home Manager template is missing: ${home_manager_template}" >&2
+        exit 1
+    fi
+done
+
 # PAM sessions (including niri) get their environment from /etc/environment;
 # systemd user services use environment.d. Both need the Fedora CA bundle
 # because Fedora's Nix profile scripts look for /etc/pki/tls/certs/ca-bundle.crt,
@@ -1254,13 +1290,16 @@ if [[ "${BASE_IMAGE:-}" == *nvidia* ]] \
 fi
 
 # Enable the runtime units. nix.mount pulls in var-home-nix.service through
-# its [Install] RequiredBy=. Only nix-daemon.socket is enabled: the daemon is
-# socket-activated after gregos-nix-store.service has initialised the store.
+# its [Install] RequiredBy=. The daemon service is enabled directly rather
+# than nix-daemon.socket: systemd creates socket files in the init_t domain,
+# which SELinux does not allow inside the persistent store, while the daemon
+# service runs unconfined and creates its own socket after
+# gregos-nix-store.service has initialised the store.
 nix_units=(
     nix.mount
     gregos-nix-store.service
     gregos-nix-graphics.service
-    nix-daemon.socket
+    nix-daemon.service
 )
 for unit in "${nix_units[@]}"; do
     systemctl enable "${unit}"
@@ -1272,11 +1311,12 @@ for unit in "${nix_units[@]}"; do
     fi
 done
 
-# Some Fedora presets enable nix-daemon.service directly. Keep it disabled so
-# the socket owns activation and gregos-nix-store.service stays ordered first.
-systemctl disable nix-daemon.service 2>/dev/null || true
-if systemctl is-enabled nix-daemon.service >/dev/null 2>&1; then
-    echo "nix-daemon.service must not be enabled; it is started by nix-daemon.socket" >&2
+# nix-daemon.socket would try to bind the same path from init_t and fail; the
+# service owns the socket on this image. Mask the unit so an enable symlink
+# left over from an earlier image cannot bring it back.
+systemctl mask nix-daemon.socket
+if [[ "$(systemctl is-enabled nix-daemon.socket 2>/dev/null || true)" != "masked" ]]; then
+    echo "nix-daemon.socket must be masked; nix-daemon.service creates the socket" >&2
     exit 1
 fi
 

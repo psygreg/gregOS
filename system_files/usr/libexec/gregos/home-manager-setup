@@ -1,0 +1,42 @@
+#!/bin/bash
+#
+# Create a default flake-based Home Manager configuration for the current user.
+#
+# The templates live in /usr/share/gregos/home-manager. @USER@, @HOME@ and
+# @REF@ are substituted here so each user gets a configuration that matches
+# their account and the Home Manager branch the image tracks.
+
+set -euo pipefail
+
+if [[ -z "${HOME:-}" ]]; then
+    echo "HOME is not set; cannot create a Home Manager configuration" >&2
+    exit 1
+fi
+
+template_dir=/usr/share/gregos/home-manager
+config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+config_dir="${config_home}/home-manager"
+state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
+ref="$(cat "${template_dir}/ref")"
+user="$(id -un)"
+
+install -d -m 0755 "${config_dir}"
+# Home Manager uses the per-user profile directory when it exists and falls
+# back to /nix/var/nix/profiles/per-user otherwise. Create the user-owned one
+# so no root-owned directory is touched.
+install -d -m 0755 "${state_home}/nix/profiles"
+
+for file in flake.nix home.nix; do
+    if [[ -e "${config_dir}/${file}" ]]; then
+        echo "Keeping existing ${config_dir}/${file}"
+        continue
+    fi
+    sed \
+        -e "s|@USER@|${user}|g" \
+        -e "s|@HOME@|${HOME}|g" \
+        -e "s|@REF@|${ref}|g" \
+        "${template_dir}/${file}" > "${config_dir}/${file}"
+    echo "Created ${config_dir}/${file}"
+done
+
+echo "Run 'home-manager switch' to activate ${config_dir}"

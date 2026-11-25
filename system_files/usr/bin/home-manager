@@ -1,0 +1,35 @@
+#!/bin/bash
+#
+# Run the Home Manager CLI shipped with the image.
+#
+# Home Manager is not baked into the image: it is fetched into the shared Nix
+# store on first use (through the daemon, so no root is needed) and cached
+# there. The generated flake locks the exact Home Manager and nixpkgs
+# revisions on first switch; this launcher tracks the branch named in
+# /usr/share/gregos/home-manager/ref.
+
+set -euo pipefail
+
+if [[ -z "${HOME:-}" ]]; then
+    echo "HOME is not set; cannot locate the Home Manager configuration" >&2
+    exit 1
+fi
+
+ref_file=/usr/share/gregos/home-manager/ref
+if [[ ! -r "${ref_file}" ]]; then
+    echo "missing ${ref_file}; is the Home Manager integration installed?" >&2
+    exit 1
+fi
+ref="$(cat "${ref_file}")"
+
+# Seed the default flake the first time a configuration build is requested.
+config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+case "${1:-}" in
+    switch|build)
+        if [[ ! -e "${config_home}/home-manager/flake.nix" ]]; then
+            /usr/libexec/gregos/home-manager-setup
+        fi
+        ;;
+esac
+
+exec nix run "github:nix-community/home-manager/${ref}" -- "$@"
