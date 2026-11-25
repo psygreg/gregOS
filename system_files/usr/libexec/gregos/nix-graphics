@@ -1,0 +1,35 @@
+#!/bin/bash
+#
+# Link the baked Nix graphics driver environment at /run/opengl-driver.
+#
+# Nixpkgs' libglvnd and Vulkan loader look for drivers in /run/opengl-driver
+# (the NixOS convention). On a non-NixOS system this directory does not exist,
+# so Nix-built graphical applications use software rendering. The image bakes
+# a driver set built from Mesa (AMD/Intel) or the host-matching NVIDIA
+# userspace libraries into the Nix store; this service points the conventional
+# path at it on every boot (/run is volatile).
+
+set -euo pipefail
+
+path_file=/nix/gregos/graphics-drivers-path
+
+if [[ ! -r "${path_file}" ]]; then
+    echo "no baked Nix graphics driver environment is recorded"
+    exit 0
+fi
+
+graphics_path="$(cat "${path_file}")"
+if [[ ! -d "${graphics_path}" ]]; then
+    echo "the recorded Nix graphics driver environment is missing: ${graphics_path}" >&2
+    exit 1
+fi
+
+# /run is recreated on every boot, but a previous instance or a user setup
+# could have left a real directory here; replace it rather than nesting a
+# symlink inside it.
+if [[ -e /run/opengl-driver && ! -L /run/opengl-driver ]]; then
+    rm -rf /run/opengl-driver
+fi
+
+ln -sfn "${graphics_path}" /run/opengl-driver
+echo "Linked /run/opengl-driver -> ${graphics_path}"

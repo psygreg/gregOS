@@ -1,0 +1,141 @@
+#!/bin/bash
+#
+# Seed and update the Determinate Nix store.
+#
+# /nix is bind-mounted from /var/home/nix (nix.mount), so it starts empty on a
+# deployment that has no Nix installation yet. This service copies the
+# image-owned seed from /usr/share/gregos/nix-seed there on first boot. On
+# later boots it only synchronises the graphics driver metadata when the image
+# changed, leaving the user's Nix database, profiles and store paths alone.
+#
+# A previous Determinate Nix installation at the upstream ostree location
+# (/var/home/nix) is detected and reused as-is; it is never overwritten. That
+# preserves existing packages and fh installations.
+
+set -euo pipefail
+
+seed_dir=/usr/share/gregos/nix-seed
+nixd_source=/usr/share/gregos/nix/determinate-nixd
+nix_profile=/nix/var/nix/profiles/default
+
+if ! mountpoint -q /nix; then
+    echo "/nix is not a mountpoint; refusing to write the Nix seed into the image root" >&2
+    exit 1
+fi
+
+if [[ ! -d "${seed_dir}/store" ]]; then
+    echo "the image does not contain a Nix seed at ${seed_dir}" >&2
+    exit 1
+fi
+
+install_nixd() {
+    ensure_local_bin
+    if [[ ! -x /usr/local/bin/determinate-nixd ]]; then
+        install -m 0555 "${nixd_source}" /usr/local/bin/determinate-nixd
+        if command -v restorecon >/dev/null 2>&1; then
+            restorecon /usr/local/bin/determinate-nixd 2>/dev/null || true
+        fi
+    fi
+}
+
+ensure_local_bin() {
+    # In this base image /usr/local is a symlink to ../var/usrlocal, and the
+    # target is only created by tmpfiles at boot. Creating it explicitly keeps
+    # the seed service working on a container/early-boot simulation as well.
+    if [[ -L /usr/local && ! -d /usr/local ]]; then
+        mkdir -p "$(readlink -f /usr/local)"
+    fi
+    mkdir -p /usr/local/bin
+}
+
+link_tools() {
+    local tool
+    ensure_local_bin
+    for tool in \
+        nix nix-build nix-channel nix-collect-garbage nix-copy-closure \
+        nix-daemon nix-env nix-hash nix-instantiate nix-prefetch-url \
+        nix-shell nix-store fh; do
+        if [[ -x "${nix_profile}/bin/${tool}" ]]; then
+            ln -sfn "${nix_profile}/bin/${tool}" "/usr/local/bin/${tool}"
+        fi
+    done
+
+    # If the user already had a Nix installation without fh, keep the baked
+    # fh usable anyway. Its store path is in the seed and is protected by a
+    # gcroot in /nix/var/nix/gcroots/gregos-nix-fh.
+    if [[ ! -x "${nix_profile}/bin/fh" && -r /nix/gregos/fh-path ]]; then
+        local fh_bin
+        fh_bin="$(cat /nix/gregos/fh-path)"
+        if [[ -x "${fh_bin}" ]]; then
+            ln -sfn "${fh_bin}" /usr/local/bin/fh
+        fi
+    fi
+}
+
+restore_nix_context() {
+    if command -v restorecon >/dev/null 2>&1; then
+        # The policy installed by gregos-nix-selinux.service labels store
+        # binaries, libraries and the daemon socket paths.
+        restorecon -R /nix 2>/dev/null || true
+    fi
+}
+
+seed_fresh_store() {
+    echo "Seeding the Determinate Nix store from ${seed_dir} into /nix"
+    # Mark the copy in progress before touching the destination. If the boot
+    # is interrupted, the next boot sees the marker and repeats the full seed
+    # instead of mistaking a partially copied profile for an existing store.
+    : > /nix/.gregos-seed-in-progress
+    cp -a --reflink=auto "${seed_dir}/." /nix/
+    install_nixd
+    link_tools
+    restore_nix_context
+    sync
+    rm -f /nix/.gregos-seed-in-progress
+}
+
+sync_image_metadata() {
+    local image_version runtime_version
+    image_version="$(cat "${seed_dir}/gregos/seed-version" 2>/dev/null || true)"
+    runtime_version="$(cat /nix/gregos/seed-version 2>/dev/null || true)"
+
+    install_nixd
+    link_tools
+
+    if [[ -n "${image_version}" && "${image_version}" == "${runtime_version}" ]]; then
+        return 0
+    fi
+
+    echo "Synchronising the image's Nix metadata (image: ${image_version:-unknown}, store: ${runtime_version:-unknown})"
+
+    # Copy only missing /nix/store entries. Existing paths are content
+    # addressed and are never overwritten, so user packages and the Nix
+    # database stay untouched.
+    mkdir -p /nix/gregos /nix/var/nix/gcroots /nix/var/determinate
+    cp -an "${seed_dir}/store/." /nix/store/
+    cp -af "${seed_dir}/gregos/." /nix/gregos/
+
+    if [[ -r /nix/gregos/graphics-drivers-path ]]; then
+        ln -sfn "$(cat /nix/gregos/graphics-drivers-path)" \
+            /nix/var/nix/gcroots/gregos-nix-graphics
+    fi
+    if [[ -r /nix/gregos/fh-path ]]; then
+        local fh_bin
+        fh_bin="$(cat /nix/gregos/fh-path)"
+        if [[ -x "${fh_bin}" ]]; then
+            ln -sfn "$(dirname "$(dirname "${fh_bin}")")" \
+                /nix/var/nix/gcroots/gregos-nix-fh
+        fi
+    fi
+
+    restore_nix_context
+    sync
+}
+
+if [[ -f /nix/.gregos-seed-in-progress || ! -x "${nix_profile}/bin/nix" ]]; then
+    seed_fresh_store
+else
+    sync_image_metadata
+fi
+
+echo "Determinate Nix is ready"

@@ -1,0 +1,17 @@
+[Unit]
+Description=Bind mount the gregOS Determinate Nix store
+Documentation=https://docs.determinate.systems/determinate-nix
+DefaultDependencies=no
+Requires=var-home-nix.service
+After=var-home-nix.service
+RequiresMountsFor=/var/home
+Before=local-fs.target
+
+[Mount]
+What=/var/home/nix
+Where=/nix
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

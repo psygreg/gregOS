@@ -79,6 +79,11 @@ environment with a tiling-compositor setup:
 - **Snap packages (snapd)** — `snapd`, `snapd-selinux` and `squashfuse` are built in, with the immutable
   system adaptations described in [Snap packages](#snap-packages). Strictly confined and classic-confined
   snaps both work out of the box.
+- **Determinate Nix + FlakeHub (`fh`)** — Determinate Nix 3.22.2 runs as a system-level multi-user daemon,
+  with the FlakeHub CLI `fh` preinstalled and the Nix graphics driver environment baked in, so Nix apps get
+  hardware acceleration on this non-NixOS system. The store lives in persistent `/var/home/nix` and is
+  bind-mounted at `/nix`; packages themselves stay user-level through flakes, `nix profile` and Home
+  Manager. See [Determinate Nix](#determinate-nix).
 - **FlatPark pre-enabled** — the [FlatPark](https://flatpark.org) community Flatpak hub ships as a system
   remote for every user (`system_files/etc/flatpak/remotes.d/flatpark.flatpakrepo`, the same file-based
   mechanism the base image uses to pre-enable Flathub).
@@ -407,6 +412,138 @@ The first `snap` invocation may take a few seconds while snapd seeds the device
   requires `$HOME` to live under `/home`.
 - Snap refreshes and installs update `/var/lib/snapd`, never `/usr`, so they survive image updates and
   rollbacks untouched.
+
+# Determinate Nix
+
+[Determinate Nix](https://determinate.systems/solutions/nix-for-linux/) is the image's Nix distribution:
+its validated downstream Nix, the `determinate-nixd` daemon and the FlakeHub CLI `fh`. It is what makes
+`fh` (FlakeHub authentication, `fh add`, `fh apply`, cache integration) work as expected.
+
+Getting it onto an immutable bootc system is custom work in the same spirit as the snap integration, but
+for a different reason: Nix writes to `/nix`, which cannot live in the read-only deployment root. The
+image therefore bakes a complete Determinate Nix installation as an image-owned **seed** and copies it
+onto persistent storage on first boot. After that, only the daemon, `fh` and the graphics driver set are
+system-level; packages and development environments are user-level flakes.
+
+## What the image provides
+
+- **Determinate Nix 3.22.2 (Nix 2.35.2)**, installed at build time in a dedicated `nix-seed` stage in the
+  [`Containerfile`](./Containerfile). The stage uses the same base image as the final image, so the
+  resulting store is self-contained and works with every variant.
+- **`fh`, the FlakeHub CLI**, preinstalled in the `default` system profile. It is on `PATH` for every
+  shell and session through `/usr/local/bin/fh`; users can still install another version in their own
+  profile.
+- **Persistent store at `/var/home/nix`**, bind-mounted at `/nix`. This is deliberately the same location
+  Determinate's own ostree planner uses on Bazzite/Silverblue, so an existing manual Determinate Nix
+  installation is detected and reused instead of being overwritten. It keeps existing packages and `fh`
+  working across the switch.
+- **A first-boot seed** in `/usr/share/gregos/nix-seed` (`store/`, profiles and the Nix database).
+  `gregos-nix-seed.service` copies it to `/var/home/nix` on the first boot and creates the `/usr/local/bin`
+  links. On later boots it only synchronises the image's graphics driver metadata, leaving the user's Nix
+  database, profiles and store paths untouched. A store that already exists is never seeded over.
+- **SELinux policy** (`/usr/share/gregos/nix/selinux/determinate-nix.pp`, the policy shipped by the
+  installer). `build.sh` loads it with `semodule` at image build time; if the build host had SELinux
+  disabled, `gregos-nix-selinux.service` loads the same file on the first enforcing boot. It labels the
+  store, the daemon sockets and `/usr/local/bin/determinate-nixd`.
+- **Nix build users and group** (`nixbld`, GID 30000, users `nixbld1`–`nixbld32`) through
+  `sysusers.d/gregos-nix.conf`. The UIDs/GIDs match the Determinate installer's defaults and the ownership
+  recorded in the baked store.
+- **The daemon units**: `nix-daemon.service`, `nix-daemon.socket` and `determinate-nixd.socket` from
+  Determinate, with `ExecStart` at `/usr/local/bin/determinate-nixd` so `sudo determinate-nixd upgrade`
+  keeps working. Both sockets are enabled, and the daemon is socket-activated.
+- **Shell and session wiring**: `/etc/profile.d/10-gregos-nix.sh` sources Nix's own `nix-daemon.sh`
+  (adding the system and per-user profiles to `PATH`), and
+  `/usr/lib/environment.d/10-gregos-nix.conf` passes the Fedora CA bundle to systemd user services and
+  D-Bus-activated applications. `/usr/local/bin/nix` and `/usr/local/bin/fh` are created by the seed
+  service so GUI applications launched outside a login shell find them too.
+- **Graphics acceleration**, described below.
+- **Configuration**: Determinate Nix owns `/etc/nix/nix.conf` and replaces it on updates. gregOS
+  settings live in `/etc/nix/nix.custom.conf`, which the generated file includes:
+  `trusted-users = root @wheel` (wheel administrators may pass daemon options) and the Fedora CA bundle.
+
+## Using Nix and fh
+
+```bash
+nix --version                 # nix (Determinate Nix 3.22.2) 2.35.2
+fh --version
+fh search rust                # FlakeHub discovery
+nix profile add nixpkgs#hello # user-level package, no image rebuild
+nix develop                   # per-project development shell
+```
+
+`nixpkgs` is wired to Determinate's weekly FlakeHub flake through the generated `nix.conf`
+(`extra-nix-path`), so `nix shell nixpkgs#…` and `nix profile add nixpkgs#…` work without adding a
+channel.
+
+FlakeHub authentication goes through Determinate Nixd, not the standalone `fh login` path (upstream
+deprecates `fh login` whenever the `determinate-nixd` socket is present):
+
+```bash
+sudo determinate-nixd login   # daemon-level auth, used for FlakeHub Cache and fh apply
+determinate-nixd status       # check the daemon login
+```
+
+`fh add`, `fh search`, `fh init`, `fh list` and the other unauthenticated commands work without a
+login. `fh status` reads the standalone CLI token file and may report "not logged in" on a Determinate
+Nixd system; use `determinate-nixd status` for the daemon state.
+
+Home Manager and flakes use the same system daemon; install Home Manager in the usual user-level way,
+for example:
+
+```bash
+nix run home-manager/master -- switch --flake .#your-hostname
+```
+
+Only the Nix daemon, `fh` and the graphics driver set ship in the image. Everything else is installed by
+the user through `nix profile`, `nix develop`, `home-manager` or `fh`, which is why image updates never
+fight user packages.
+
+## Graphics acceleration
+
+Nixpkgs builds its `libglvnd` and Vulkan loader to look for drivers in `/run/opengl-driver` (the NixOS
+convention). On a non-NixOS system that directory does not exist by default, so Nix-built graphical
+programs fall back to software rendering unless a compatible driver set is placed there. The image bakes
+one from the same pinned nixpkgs used for the graphics stack and links it at `/run/opengl-driver` on every
+boot (`gregos-nix-graphics.service`). No `nixGL` wrapper is needed, and a Nix application can launch host
+applications without inheriting a wrapped environment.
+
+- **AMD/Intel variants**: Mesa (including the Vulkan drivers and AMD VA-API), `intel-media-driver` for
+  Intel VA-API, and `libvdpau-va-gl` for VDPAU.
+- **NVIDIA variants**: the exact proprietary userspace driver version used by the base image, extracted
+  from NVIDIA's matching `.run` and built with `libsOnly = true`; the host keeps providing the kernel
+  modules. The EGL external-platform libraries (`egl-wayland`, `egl-wayland2`, `egl-gbm`, `egl-x11`) and
+  the NVIDIA Vulkan ICD are included. `__GLX_VENDOR_LIBRARY_NAME=nvidia` is set system-wide on these
+  variants so Nix Xwayland applications pick the NVIDIA vendor; Wayland EGL selects `10_nvidia.json` from
+  `/run/opengl-driver` automatically.
+
+Verify acceleration with a Nix application:
+
+```bash
+nix shell nixpkgs#mesa-demos --command glxgears
+nix run nixpkgs#vulkan-tools -- vkcube
+```
+
+The baked set is 64-bit. 32-bit Nix applications (and NVIDIA VA-API hardware video decoding) are not
+included; both can be added in a user flake/Home Manager configuration when needed. The baked driver
+environment itself is refreshed by image updates through the seed sync, so it stays matched to the
+image's Mesa/NVIDIA stack.
+
+## Updates, persistence and limits
+
+- `/var/home/nix` survives image updates and rollbacks. `/nix` is only the bind mount, never a directory
+  on the immutable root.
+- The Nix base is upgraded with `sudo determinate-nixd upgrade`. The preinstalled `fh` and the system
+  profile are upgraded with `sudo nix profile upgrade --all --profile /nix/var/nix/profiles/default`.
+  User packages are upgraded in the user profile or by Home Manager.
+- Image updates refresh the baked graphics driver set: `gregos-nix-seed.service` copies any new
+  `/nix/store` paths it needs and rewrites `/run/opengl-driver` on the next boot. It does not touch the
+  Nix database or existing profiles.
+- The first boot copies the seed (roughly 1.3 GB on AMD/Intel, 2.3 GB on NVIDIA) into `/var/home/nix`;
+  later boots only compare a version stamp and are effectively free. For the same reason, existing
+  installs at a different path (for example a transient-root `/nix` installation) are not adopted — only
+  the upstream `/var/home/nix` location is.
+- The image refuses to build if a future base image starts shipping Fedora's `nix`/`nix-daemon` RPMs,
+  because mixing them with this installation would fight over `/nix` and the daemon.
 
 # GnuPG: keyboxd stays disabled
 

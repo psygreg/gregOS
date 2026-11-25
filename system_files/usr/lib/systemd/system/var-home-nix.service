@@ -1,0 +1,14 @@
+[Unit]
+Description=Create the backing directory for the gregOS Nix store
+DefaultDependencies=no
+After=systemd-remount-fs.service
+RequiresMountsFor=/var/home
+Before=nix.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/install -d -m 0755 -o root -g root /var/home/nix
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=nix.mount
