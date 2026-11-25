@@ -123,6 +123,9 @@ add_glob() {
 # Mesa/OpenGL/EGL/Vulkan/VA-API/VDPAU. The glvnd loaders themselves are
 # intentionally not copied: Nix applications must keep their own libGL/libEGL/
 # libvulkan from the Nix store. Only the vendor and DRI plugins use this path.
+#
+# On gregOS-nova this is the entire NVIDIA stack: libvulkan_nouveau.so (NVK)
+# and the nouveau/zink DRI drivers. There is no proprietary userspace to copy.
 add_glob /usr/lib64 lib \
     'libGLX_*.so*' 'libEGL_*.so*' 'libGLESv1_CM_*.so*' 'libGLESv2_*.so*' \
     'libglapi.so*' 'libvulkan_*.so*' 'libva*.so*' 'libvdpau*.so*'

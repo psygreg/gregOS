@@ -8,6 +8,8 @@ Choose one of the available variants:
 - `gregos`: for AMD and Intel graphics cards and integrated graphics
 - `gregos-nvidia`:  for Nvidia Maxwell/Pascal (GT/X 9xx/10xx), GTX 750 and 750Ti series cards
 - `gregos-nvidia-open`: for Nvidia Turing (GTX 16xx and RTX 20xx) series and newer cards
+- `gregos-nova`: for Nvidia Turing (GTX 16xx and RTX 20xx) series and newer cards, using the fully
+  open-source Nouveau/NVK stack (see [NVIDIA variants](#nvidia-variants))
 
 To install it, from any running `bootc`-based Fedora immutable system (recommended *Bazzite*):
 ```bash
@@ -84,6 +86,10 @@ environment with a tiling-compositor setup:
   apps get hardware acceleration on this non-NixOS system. The store lives in persistent `/var/home/nix`
   and is bind-mounted at `/nix`; packages themselves stay user-level through flakes, `nix profile` and
   Home Manager. See [Nix](#nix).
+- **A fully open-source NVIDIA option (`gregos-nova`)** — built from the standard Bazzite base with
+  Nouveau + GSP firmware and Mesa NVK/Zink, and no proprietary NVIDIA driver. The Nix GPU bundle exposes
+  NVK to Nix applications the same way the other variants expose their host drivers. See
+  [NVIDIA variants](#nvidia-variants).
 - **FlatPark pre-enabled** — the [FlatPark](https://flatpark.org) community Flatpak hub ships as a system
   remote for every user (`system_files/etc/flatpak/remotes.d/flatpark.flatpakrepo`, the same file-based
   mechanism the base image uses to pre-enable Flathub).
@@ -575,8 +581,9 @@ out-of-tree driver (including CUDA and ROCm).
 The image build runs `build_files/nix-host-graphics.sh`, which:
 
 - collects the host OpenGL/EGL/GLES vendor libraries, DRI drivers, Vulkan ICDs, VA-API/VDPAU drivers,
-  NVIDIA userspace libraries, CUDA interfaces (`libcuda`, NVML, NVDEC/NVENC, OptiX), and whichever
-  ROCm/HSA/HIP, Level Zero and OpenCL vendor libraries the base image provides;
+  NVIDIA userspace libraries (or Mesa NVK on `gregos-nova`), CUDA interfaces (`libcuda`, NVML,
+  NVDEC/NVENC, OptiX), and whichever ROCm/HSA/HIP, Level Zero and OpenCL vendor libraries the base
+  image provides;
 - copies their complete ELF dependency closure into `/usr/lib/gregos/nix-graphics/lib`, excluding glibc
   itself;
 - patches every copied ELF with an RPATH pointing at the runtime bundle, so it never falls back to a
@@ -595,8 +602,9 @@ bundle's files are regular files in the image; only the `/run` tree contains sym
 the OCI chunker away from its symlink/xattr corruption bug.
 
 - **OpenGL / Vulkan / video**: host Mesa DRI, Vulkan, VA-API and VDPAU on AMD/Intel; the host NVIDIA
-  userspace stack on NVIDIA variants. `LD_LIBRARY_PATH=/run/opengl-driver/lib`, `LIBGL_DRIVERS_PATH`,
-  `LIBVA_DRIVERS_PATH`, `VDPAU_DRIVER_PATH`, `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`,
+  userspace stack on the proprietary NVIDIA variants; and host Mesa NVK + Zink on `gregos-nova`.
+  `LD_LIBRARY_PATH=/run/opengl-driver/lib`, `LIBGL_DRIVERS_PATH`, `LIBVA_DRIVERS_PATH`,
+  `VDPAU_DRIVER_PATH`, `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`,
   `__EGL_VENDOR_LIBRARY_FILENAMES` and `__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS` are set through
   `/etc/environment`, `/usr/lib/environment.d` and `/etc/profile.d`, so Nix applications use the bundle
   without a `nixGL` wrapper. Vulkan layers are not bundled: the loader also scans the host layer
@@ -604,8 +612,10 @@ the OCI chunker away from its symlink/xattr corruption bug.
   through the `XDG_DATA_DIRS` that `nix shell` sets.
 - **NVIDIA CUDA**: `libcuda.so.1`, NVML, NVDEC/NVENC, OptiX and the other host NVIDIA compute libraries
   are exposed in `/run/opengl-driver/lib`, where Nix CUDA packages expect them.
-  `__GLX_VENDOR_LIBRARY_NAME=nvidia` is set system-wide on the NVIDIA variants so Nix Xwayland
-  applications select the NVIDIA vendor; Wayland EGL picks `10_nvidia.json`.
+  `__GLX_VENDOR_LIBRARY_NAME=nvidia` is set system-wide on the proprietary NVIDIA variants so Nix
+  Xwayland applications select the NVIDIA vendor; Wayland EGL picks `10_nvidia.json`. `gregos-nova` has
+  no CUDA or NVML: the open stack does not implement them, so the bundle carries NVK and Mesa's DRI
+  drivers only.
 - **Other compute**: the host ROCm/HSA/HIP libraries and `/opt/rocm/lib` (when present), Level Zero
   drivers, and OpenCL ICDs (Mesa Rusticl, Intel, NVIDIA) are included. `OCL_ICD_VENDORS` points Nix
   OpenCL clients at the bundle.
@@ -613,6 +623,11 @@ the OCI chunker away from its symlink/xattr corruption bug.
   nodes, `/dev/kfd` and `/dev/nvidia*`. Existing modes and group ownership are not changed; users who
   log in through a seat (the normal desktop case) get access without being added to additional groups.
   Compute nodes therefore work for Nix applications as they do for host ones.
+
+On `gregos-nova`, the bundle is built from the same host Mesa that runs the desktop: `libvulkan_nouveau.so`
+(the NVK ICD) plus `nouveau_dri`/`zink_dri`. The build verifies that all three are in the bundle and
+fails if a `libnvidia-*` library appears, so a Nix application cannot silently pick up the proprietary
+stack on this variant.
 
 Verify acceleration with Nix applications:
 
@@ -744,12 +759,76 @@ For a base image, you can choose any of the Universal Blue images or start from 
 
 ### NVIDIA variants
 
-Besides the standard image, this repository also builds two NVIDIA variants from Bazzite's NVIDIA bases, published alongside it by the `build.yml` workflow matrix:
+Besides the standard image, this repository publishes three NVIDIA-targeted variants through the
+`build.yml` workflow matrix:
 
-- `ghcr.io/psygreg/gregos-nvidia:stable` — from `ghcr.io/ublue-os/bazzite-nvidia:stable` (proprietary driver)
-- `ghcr.io/psygreg/gregos-nvidia-open:stable` — from `ghcr.io/ublue-os/bazzite-nvidia-open:stable` (open kernel modules)
+| Variant | Base image | NVIDIA stack |
+| --- | --- | --- |
+| `ghcr.io/psygreg/gregos-nvidia:latest` | `ghcr.io/ublue-os/bazzite-nvidia:stable` | proprietary driver |
+| `ghcr.io/psygreg/gregos-nvidia-open:latest` | `ghcr.io/ublue-os/bazzite-nvidia-open:stable` | open kernel modules, proprietary userspace |
+| `ghcr.io/psygreg/gregos-nova:latest` | `ghcr.io/ublue-os/bazzite:stable` | fully open: Nouveau GSP + Mesa NVK |
 
-Both use the same build procedure; when the base image name includes `nvidia`, `build_files/build.sh` swaps Mesa's `MESA_SHADER_CACHE_MAX_SIZE` default for the NVIDIA driver's `__GL_SHADER_DISK_CACHE_SIZE` and installs the "Limit Free Buffer Pool On Wayland Compositors" application profile for niri under `/etc/nvidia/nvidia-application-profiles-rc.d/`. The workflow sets `IMAGE_NAME` and `BASE_IMAGE` per matrix entry; for local builds, export `BASE_IMAGE` before calling `just build`, e.g. `BASE_IMAGE=ghcr.io/ublue-os/bazzite-nvidia:stable just build gregos-nvidia latest`.
+The first two use Bazzite's NVIDIA bases. When the base image name includes `nvidia`,
+`build_files/build.sh` swaps Mesa's `MESA_SHADER_CACHE_MAX_SIZE` default for the NVIDIA driver's
+`__GL_SHADER_DISK_CACHE_SIZE` and installs the "Limit Free Buffer Pool On Wayland Compositors"
+application profile for niri under `/etc/nvidia/nvidia-application-profiles-rc.d/`. The workflow sets
+`IMAGE_NAME`, `BASE_IMAGE` and `IMAGE_VARIANT` per matrix entry; for local builds, export the base and
+the variant before calling `just build`, e.g.
+`IMAGE_VARIANT=nvidia BASE_IMAGE=ghcr.io/ublue-os/bazzite-nvidia:stable just build gregos-nvidia latest`.
+
+#### `gregos-nova`: open-source NVIDIA
+
+`gregos-nova` is for users who want the NVIDIA stack to be open source end to end. It is built from the
+standard Bazzite base (the same one as `gregos`) and contains no NVIDIA proprietary kernel module or
+userspace driver. The stack is:
+
+- **nouveau + GSP firmware** — the open kernel driver for Turing (GTX 16xx / RTX 20xx) and newer GPUs.
+  GSP firmware is required for reclocking and for the interface NVK uses. The firmware itself is an
+  NVIDIA-provided binary blob (as on every driver stack), loaded by the open kernel driver. The image
+  installs `nvidia-gpu-firmware`, pins `nouveau.config=NvGspRm=1` through
+  `/usr/lib/bootc/kargs.d/40-gregos-nova-gsp.toml`, and fails the build if the firmware or the
+  userspace pieces are missing.
+- **Mesa NVK** — the [conformant open-source Vulkan 1.4 driver](https://docs.mesa3d.org/drivers/nvk.html)
+  for NVIDIA GPUs, exposed as the host Vulkan ICD and in the Nix host-graphics bundle.
+- **Mesa Zink** — OpenGL 4.6 layered over NVK. Mesa uses NVK+Zink by default for Turing and newer since
+  Mesa 25.1.
+
+The build also fails if a proprietary NVIDIA package is installed or if a `libnvidia-*` library appears in
+the Nix GPU bundle, so the variant cannot silently become a copy of `gregos-nvidia`.
+
+**NOVA status.** [NOVA](https://docs.kernel.org/gpu/nova/index.html) (`nova-core` + `nova-drm`) is
+NVIDIA's new upstream Rust driver intended to replace nouveau on GSP hardware. `nova-core` is upstream,
+but `nova-drm` is still a work-in-progress skeleton — its Kconfig says it "is work in progress and may
+not be functional" — and Fedora's kernel does not build the modules at the time of writing (Fedora 45).
+It therefore cannot drive a display or accelerate applications yet. `gregos-nova` ships the open stack
+that works today, which is also the kernel and userspace interface NOVA is being built to serve. When
+`nova-drm` becomes functional and Fedora enables it, this variant picks it up through the kernel without
+a userspace change; the name records that target, not a driver that is already active.
+
+**What works, and what does not.** Vulkan and OpenGL applications, Wayland/Xwayland compositing, video
+decode through Mesa, and the Nix GPU bundle work. The open stack does not provide CUDA, NVENC, NVML,
+OptiX, or the NVIDIA control panel, and performance is generally below the proprietary driver. Some
+games and anti-cheat systems may refuse to run or may be unstable, and power management on hybrid
+laptops is less mature. If you need CUDA or maximum performance, use `gregos-nvidia` or
+`gregos-nvidia-open`.
+
+When rebasing from one of the proprietary variants, check `/etc/environment`: if it still contains
+`__GLX_VENDOR_LIBRARY_NAME=nvidia`, remove that line and reboot. The nova image does not set it, but a
+locally modified `/etc/environment` survives a `bootc switch` and would keep pointing libglvnd at the
+proprietary GLX vendor that is no longer installed.
+
+Verify the stack with:
+
+```bash
+vulkaninfo --summary   # the NVIDIA GPU should be listed with driverName "NVK"
+glxinfo -B             # the renderer should be "zink (NVK ...)"
+```
+
+Nix applications use the same bundle:
+
+```bash
+nix shell nixpkgs#vulkan-tools --command vulkaninfo --summary
+```
 
 
 <details>
@@ -860,6 +939,9 @@ These are all sourced from the `image-template.env` file.
 - `image_name`: The name of the image (default: "image-template").
 - `default_tag`: The default tag for the image (default: "latest").
 - `bib_image`: The Bootc Image Builder (BIB) image (default: "quay.io/centos-bootc/bootc-image-builder:latest").
+- `BASE_IMAGE`: The base container image (default: `ghcr.io/ublue-os/bazzite:stable`).
+- `IMAGE_VARIANT`: The userspace GPU stack: `standard`, `nvidia`, `nvidia-open` or `nova`
+  (default: `standard`). `gregos-nova` needs `nova` because it shares its base image with `gregos`.
 
 ## Building The Image
 

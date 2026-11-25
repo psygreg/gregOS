@@ -13,6 +13,11 @@ export bib_image := env_var("BIB_IMAGE")
 # image; the build.yml matrix overrides it for the NVIDIA variants.
 export base_image := env_var_or_default("BASE_IMAGE", "ghcr.io/ublue-os/bazzite:stable")
 
+# Which userspace GPU stack the image targets: standard, nvidia, nvidia-open or
+# nova. gregOS and gregOS-nova share the same base image, so build.sh cannot
+# infer nova from BASE_IMAGE alone.
+export image_variant := env_var_or_default("IMAGE_VARIANT", "standard")
+
 alias build-vm := build-qcow2
 alias rebuild-vm := rebuild-qcow2
 alias run-vm := run-vm-qcow2
@@ -126,7 +131,7 @@ build $target_image=image_name $tag=default_tag:
     LABELS+=("--label" "org.opencontainers.image.vendor={{ repo_organization }}")
 
     # This actually builds the image!
-    PODMAN_BUILD_ARGS=("${BUILD_ARGS[@]}" "${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile --build-arg BASE_IMAGE={{ base_image }})
+    PODMAN_BUILD_ARGS=("${BUILD_ARGS[@]}" "${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile --build-arg BASE_IMAGE={{ base_image }} --build-arg IMAGE_VARIANT={{ image_variant }})
 
     # Pass the GitHub API token through to the build (used by build.sh when
     # fetching release assets). Builds without it fall back to anonymous

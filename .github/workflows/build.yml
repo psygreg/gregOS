@@ -30,20 +30,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One entry per published image. NVIDIA bases are the same Bazzite
+        # One entry per published image. The NVIDIA bases are the same Bazzite
         # project; build.sh applies the NVIDIA-specific configuration when
-        # BASE_IMAGE includes "nvidia" in its name.
+        # BASE_IMAGE includes "nvidia" in its name. gregOS-nova shares the
+        # standard base with gregOS, so the variant is passed explicitly.
         include:
           - image_name: "gregOS"
             base_image: "ghcr.io/ublue-os/bazzite:stable"
+            variant: "standard"
           - image_name: "gregOS-nvidia"
             base_image: "ghcr.io/ublue-os/bazzite-nvidia:stable"
+            variant: "nvidia"
           - image_name: "gregOS-nvidia-open"
             base_image: "ghcr.io/ublue-os/bazzite-nvidia-open:stable"
+            variant: "nvidia-open"
+          - image_name: "gregOS-nova"
+            base_image: "ghcr.io/ublue-os/bazzite:stable"
+            variant: "nova"
 
     env:
       IMAGE_NAME: ${{ matrix.image_name }}
       BASE_IMAGE: ${{ matrix.base_image }}
+      IMAGE_VARIANT: ${{ matrix.variant }}
 
     permissions:
       contents: read

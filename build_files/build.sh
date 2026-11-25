@@ -2,6 +2,19 @@
 
 set -ouex pipefail
 
+# Userspace GPU stack this image targets. gregOS and gregOS-nova share the
+# standard Bazzite base, so the variant cannot always be inferred from
+# BASE_IMAGE; an explicit value also lets CI catch a mistyped matrix entry
+# before the rest of the build runs.
+image_variant="${IMAGE_VARIANT:-standard}"
+case "${image_variant}" in
+    standard|nvidia|nvidia-open|nova) ;;
+    *)
+        echo "unknown IMAGE_VARIANT '${image_variant}' (expected standard, nvidia, nvidia-open or nova)" >&2
+        exit 1
+        ;;
+esac
+
 ### Install packages
 
 # Packages can be installed from any enabled yum repo on the image.
@@ -769,17 +782,27 @@ done
 ##   ghcr.io/ublue-os/bazzite-nvidia:stable     proprietary NVIDIA driver
 ##   ghcr.io/ublue-os/bazzite-nvidia-open:stable open NVIDIA kernel modules
 ##
-## Everything else in this script is identical for all three; only the
-## shader-cache drop-in differs (Mesa vs the NVIDIA driver read different
-## variables), and only the NVIDIA images need the "limit free buffer pool"
-## application profile for niri. Detection is by base-image name so each
-## variant stays reproducible and cannot be guessed wrong from the runtime
-## package set.
+## gregOS-nova is built from the standard base too, so the matrix also passes
+## IMAGE_VARIANT (standard, nvidia, nvidia-open or nova). Most of this script
+## is identical for every variant; the differences are the shader-cache
+## variable (Mesa vs the NVIDIA driver read different variables), the "limit
+## free buffer pool" application profile for niri on the NVIDIA bases, and the
+## open-stack validation plus GSP kernel argument on gregOS-nova. Detection of
+## the NVIDIA bases stays by base-image name so each variant is reproducible
+## and cannot be guessed wrong from the runtime package set.
 
 # __GL_SHADER_DISK_CACHE_SIZE is documented in bytes, so 10 GB is spelled out
 # exactly; the Mesa default below accepts the "10G" suffix shorthand.
 shader_cache_line="DefaultEnvironment=MESA_SHADER_CACHE_MAX_SIZE=10G"
 shader_cache_comment="# gregOS: cap Mesa's on-disk compiled-shader cache at ~10 GB"
+
+# gregOS-nova is defined by the absence of the proprietary stack. Catching a
+# wrong base here keeps a misconfigured matrix entry from publishing an image
+# whose name promises an open stack it does not contain.
+if [[ "${image_variant}" == "nova" && "${BASE_IMAGE:-}" == *nvidia* ]]; then
+    echo "gregOS-nova must be built from the standard Bazzite base, not ${BASE_IMAGE}" >&2
+    exit 1
+fi
 
 if [[ "${BASE_IMAGE:-}" == *nvidia* ]]; then
     echo "NVIDIA base image detected (${BASE_IMAGE}): applying NVIDIA configuration"
@@ -828,6 +851,110 @@ EOF
     cat > /usr/lib/environment.d/20-gregos-nix-nvidia.conf <<'EOF'
 __GLX_VENDOR_LIBRARY_NAME=nvidia
 EOF
+fi
+
+### Open-source NVIDIA stack (gregOS-nova)
+##
+## gregOS-nova is built from the same standard Bazzite base as gregOS and
+## deliberately ships no NVIDIA proprietary driver or userspace library. The
+## NVIDIA GPU stack is:
+##
+##   nouveau + GSP firmware   the open kernel driver for Turing (GTX 16xx /
+##                            RTX 20xx) and newer. GSP is required for
+##                            reclocking and for the interface NVK uses.
+##   Mesa NVK                 the conformant open-source Vulkan 1.4 driver for
+##                            NVIDIA GPUs.
+##   Mesa Zink                OpenGL 4.6 layered over NVK. Mesa uses NVK+Zink
+##                            by default for Turing and newer since 25.1.
+##
+## NOVA (nova-core + nova-drm), the upstream Rust driver intended to replace
+## nouveau on GSP hardware, is not usable yet: nova-core is upstream, but
+## nova-drm is still a work-in-progress skeleton (its Kconfig says it may not
+## be functional) and Fedora's kernel does not build the modules. This variant
+## therefore runs the open stack that works today - the same kernel and
+## userspace interface NOVA is being built to serve. When nova-drm becomes
+## functional and Fedora enables it, this variant picks it up through the
+## kernel without a userspace change; the name records that target.
+##
+## Only Turing and newer have the GSP that both the current nouveau path and
+## NOVA require. The build validates the whole open stack so a base-image
+## change cannot silently leave the image without accelerated graphics.
+if [[ "${image_variant}" == "nova" ]]; then
+    echo "Open-source NVIDIA variant: validating nouveau + GSP + Mesa NVK"
+    echo "NOVA itself is not usable yet; this image ships nouveau GSP + NVK, the stack nova-drm will replace"
+
+    # GSP firmware is what brings up Turing+ GPUs under nouveau and what NOVA
+    # will boot. Install it explicitly (the standard base already carries it)
+    # so a slimmer future base cannot leave the GPU unaccelerated. The Mesa
+    # packages are pinned for the same reason: NVK is the Vulkan driver and
+    # nouveau_dri/zink_dri are the DRI drivers.
+    dnf5 install -y nvidia-gpu-firmware mesa-vulkan-drivers mesa-dri-drivers
+
+    for nova_package in nvidia-gpu-firmware mesa-vulkan-drivers mesa-dri-drivers; do
+        if ! rpm -q "${nova_package}" >/dev/null 2>&1; then
+            echo "required open NVIDIA package '${nova_package}' is missing after installation" >&2
+            exit 1
+        fi
+    done
+
+    # No proprietary NVIDIA package may be present. nvidia-gpu-firmware is a
+    # firmware package, not a driver, and is required above.
+    proprietary_nvidia="$(
+        rpm -qa --qf '%{NAME}\n' \
+            | grep -E '^(nvidia$|nvidia-|akmod-nvidia|kmod-nvidia|xorg-x11-drv-nvidia)' \
+            | grep -v '^nvidia-gpu-firmware$' \
+            | sort -u || true
+    )"
+    if [[ -n "${proprietary_nvidia}" ]]; then
+        echo "gregOS-nova must not contain proprietary NVIDIA packages:" >&2
+        printf '%s\n' "${proprietary_nvidia}" >&2
+        exit 1
+    fi
+
+    # The userspace half of the open stack. nouveau_dri and zink_dri are
+    # symlinks to Mesa's shared libdril_dri in current Fedora, so check that
+    # the resolved target exists as well.
+    for nova_file in \
+        /usr/lib64/libvulkan_nouveau.so \
+        /usr/share/vulkan/icd.d/nouveau_icd.x86_64.json \
+        /usr/lib64/dri/nouveau_dri.so \
+        /usr/lib64/dri/zink_dri.so; do
+        if [[ ! -e "${nova_file}" ]]; then
+            echo "open NVIDIA userspace file is missing: ${nova_file}" >&2
+            exit 1
+        fi
+    done
+
+    if ! compgen -G '/usr/lib/firmware/nvidia/*/gsp/gsp-*.bin*' >/dev/null; then
+        echo "no GSP firmware found under /usr/lib/firmware/nvidia" >&2
+        exit 1
+    fi
+
+    # Force the GSP path explicitly. Linux 6.18+ already defaults to GSP on
+    # Turing/Ampere (and Ada+ already did), but GSP is the supported path for
+    # NVK on Turing and newer and it is what nova-drm requires, so pin the
+    # behavior instead of relying on a kernel default that may change. Pre-GSP
+    # GPUs are outside this variant's supported range (Turing+), matching the
+    # other open-NVIDIA images.
+    install -d /usr/lib/bootc/kargs.d
+    cat > /usr/lib/bootc/kargs.d/40-gregos-nova-gsp.toml <<'EOF'
+# gregOS-nova: boot nouveau on GSP firmware. GSP is the supported path for
+# NVK on Turing and newer, and it is what the future nova-drm driver uses.
+kargs = [
+  "nouveau.config=NvGspRm=1",
+]
+EOF
+
+    if ! grep -qF '"nouveau.config=NvGspRm=1"' /usr/lib/bootc/kargs.d/40-gregos-nova-gsp.toml; then
+        echo "the gregOS-nova GSP kernel argument is missing from its kargs.d drop-in" >&2
+        exit 1
+    fi
+
+    # The proprietary variants set this to select the NVIDIA GLX vendor. If a
+    # deployment rebased from one of them still has the line in /etc, remove it
+    # so libglvnd keeps using Mesa on this image.
+    sed -i '/^__GLX_VENDOR_LIBRARY_NAME=nvidia$/d' /etc/environment 2>/dev/null || true
+    rm -f /usr/lib/environment.d/20-gregos-nix-nvidia.conf
 fi
 
 # Rewrite the shipped drop-in with the variant-correct variable. It is
@@ -1309,6 +1436,35 @@ if [[ "${BASE_IMAGE:-}" == *nvidia* ]] \
     && ! grep -qx 'lib/libcuda.so.1' /usr/lib/gregos/nix-graphics/libs.list; then
     echo "NVIDIA base image detected but the host graphics bundle has no libcuda.so.1" >&2
     exit 1
+fi
+
+# gregOS-nova has no proprietary NVIDIA userspace, so its Nix bundle must not
+# contain any either: Mesa NVK and the DRI drivers are the entire graphics
+# stack. Verifying the bundle here is what makes "Nix apps are accelerated"
+# true for the open variant instead of an assumption.
+if [[ "${image_variant}" == "nova" ]]; then
+    for nova_nix_lib in lib/libvulkan_nouveau.so lib/dri/nouveau_dri.so lib/dri/zink_dri.so; do
+        if ! grep -qx "${nova_nix_lib}" /usr/lib/gregos/nix-graphics/libs.list; then
+            echo "the host graphics bundle is missing ${nova_nix_lib} for gregOS-nova" >&2
+            exit 1
+        fi
+    done
+
+    if grep -q '^lib/libnvidia-' /usr/lib/gregos/nix-graphics/libs.list; then
+        echo "the host graphics bundle contains proprietary NVIDIA libraries on gregOS-nova" >&2
+        exit 1
+    fi
+
+    if ! grep -q '/run/opengl-driver/lib/libvulkan_nouveau.so' \
+        /usr/lib/gregos/nix-graphics/share/vulkan/icd.d/nouveau_icd.x86_64.json; then
+        echo "the host graphics bundle does not point the nouveau Vulkan ICD at NVK" >&2
+        exit 1
+    fi
+
+    if grep -q '^__GLX_VENDOR_LIBRARY_NAME=' /etc/environment 2>/dev/null; then
+        echo "__GLX_VENDOR_LIBRARY_NAME must not be set on gregOS-nova (it selects the proprietary GLX vendor)" >&2
+        exit 1
+    fi
 fi
 
 # Enable the runtime units. nix.mount pulls in var-home-nix.service through
