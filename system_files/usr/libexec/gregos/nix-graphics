@@ -1,14 +1,18 @@
 #!/bin/bash
 #
-# Materialise the host graphics/compute driver bundle at /run/opengl-driver.
+# Expose the host graphics/compute driver bundle at /run/opengl-driver.
 #
 # Nixpkgs' libglvnd and Vulkan loader look for drivers in this directory. The
 # image build creates a regular-file bundle under
 # /usr/lib/gregos/nix-graphics (libraries copied from the host GPU stack, with
 # their ELF dependency closure and RPATH patched at build time); this service
-# links that bundle into /run on every boot. /run is volatile, so the symlinks
-# are kept out of the OSTree image itself - which also avoids the chunker's
-# corrupted-symlink bug.
+# exposes that bundle on every boot.
+#
+# The bundle is bind-mounted instead of symlinked. Nix buildFHSEnv wrappers
+# (umu-launcher, Faugus, Steam) bind /run but replace /usr with their own
+# root, so a /run/opengl-driver symlink farm pointing into /usr disappears
+# inside them and Proton cannot load an EGL/Vulkan driver. The mount is made
+# read-only because the bundle belongs to the immutable image.
 #
 # The same tree exposes CUDA, ROCm, Level Zero and OpenCL vendor libraries so
 # Nix applications can use the host GPU compute stack. Device access is
@@ -16,33 +20,41 @@
 
 set -euo pipefail
 
-bundle=/usr/lib/gregos/nix-graphics
-runtime=/run/opengl-driver
+bundle="${1:-/usr/lib/gregos/nix-graphics}"
+runtime="${2:-/run/opengl-driver}"
+
+case "${runtime}" in
+    /run/?*|/tmp/?*) ;;
+    *)
+        echo "refusing unsafe runtime path: ${runtime}" >&2
+        exit 1
+        ;;
+esac
 
 if [[ ! -r "${bundle}/libs.list" ]]; then
     echo "host graphics bundle is missing: ${bundle}/libs.list" >&2
     exit 1
 fi
 
-rm -rf "${runtime}"
-install -d "${runtime}"
-
+# Validate the manifest before exposing the tree: a bundle missing a driver
+# is worse than no bundle at all.
 while IFS= read -r rel; do
     [[ -n "${rel}" ]] || continue
     if [[ ! -e "${bundle}/${rel}" ]]; then
         echo "host graphics bundle file is missing: ${bundle}/${rel}" >&2
         exit 1
     fi
-    install -d "$(dirname "${runtime}/${rel}")"
-    ln -sfn "${bundle}/${rel}" "${runtime}/${rel}"
 done < "${bundle}/libs.list"
 
-if [[ -d "${bundle}/share" ]]; then
-    install -d "${runtime}/share"
-    for entry in "${bundle}"/share/*; do
-        [[ -e "${entry}" ]] || continue
-        ln -sfn "${entry}" "${runtime}/share/$(basename "${entry}")"
-    done
+# A previous run may still hold the path (service restart, manual mount).
+if [[ ! -L "${runtime}" ]] && mountpoint -q "${runtime}"; then
+    umount -l "${runtime}"
 fi
+rm -rf "${runtime}"
+install -d "${runtime}"
 
-echo "Linked /run/opengl-driver to the host graphics/compute bundle"
+mount --bind "${bundle}" "${runtime}"
+mount -o remount,bind,ro "${runtime}" \
+    || echo "warning: could not remount ${runtime} read-only" >&2
+
+echo "Bind-mounted ${runtime} to the host graphics/compute bundle"

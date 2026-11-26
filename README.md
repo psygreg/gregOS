@@ -82,10 +82,10 @@ environment with a tiling-compositor setup:
   system adaptations described in [Snap packages](#snap-packages). Strictly confined and classic-confined
   snaps both work out of the box.
 - **Nix (official Fedora packages)** — Nix 2.35.6 runs as a system-level multi-user daemon, with the
-  host GPU drivers linked at `/run/opengl-driver` (OpenGL/Vulkan, CUDA, ROCm/OpenCL/Level Zero), so Nix
-  apps get hardware acceleration on this non-NixOS system. The store lives in persistent `/var/home/nix`
-  and is bind-mounted at `/nix`; packages themselves stay user-level through flakes, `nix profile` and
-  Home Manager. See [Nix](#nix).
+  host GPU drivers bind-mounted at `/run/opengl-driver` (OpenGL/Vulkan, CUDA, ROCm/OpenCL/Level Zero),
+  so Nix apps get hardware acceleration on this non-NixOS system. The store lives in persistent
+  `/var/home/nix` and is bind-mounted at `/nix`; packages themselves stay user-level through flakes,
+  `nix profile` and Home Manager. See [Nix](#nix).
 - **A fully open-source NVIDIA option (`gregos-nova`)** — built from the standard Bazzite base with
   Nouveau + GSP firmware and Mesa NVK/Zink, and no proprietary NVIDIA driver. The Nix GPU bundle exposes
   NVK to Nix applications the same way the other variants expose their host drivers. See
@@ -564,11 +564,11 @@ The default configuration enables `nix.gc` (weekly, deleting generations older t
 package sets and the store paths they keep alive are reclaimed; adjust `nix.gc.options` or
 `nix.gc.dates` to keep more history.
 
-`targets.genericLinux.gpu` is deliberately disabled in the default configuration. gregOS already links
-the host GPU stack at `/run/opengl-driver` and exports the loader variables system-wide; Home Manager's
-`gpu` module would instead build a second, Nix-owned driver set and require `sudo` to activate it, which
-would replace the kernel-matched host drivers until the next boot. Nix applications, including those
-installed by Home Manager, use the host bundle unchanged.
+`targets.genericLinux.gpu` is deliberately disabled in the default configuration. gregOS already
+bind-mounts the host GPU stack at `/run/opengl-driver` and exports the loader variables system-wide;
+Home Manager's `gpu` module would instead build a second, Nix-owned driver set and require `sudo` to
+activate it, which would replace the kernel-matched host drivers until the next boot. Nix
+applications, including those installed by Home Manager, use the host bundle unchanged.
 
 `nix profile add nixpkgs#…` and `nix profile remove …` also work without root, for imperative use.
 Home Manager and `nix profile` both manage `~/.nix-profile`; use one of them for a given profile. If
@@ -601,9 +601,11 @@ Nix applications load these drivers with their own glibc from nixpkgs. Current n
 new as this Fedora base, so the host drivers load cleanly; a very old nixpkgs pin may predate the
 symbols a current host driver uses.
 
-`gregos-nix-graphics.service` materialises the bundle as `/run/opengl-driver` on every boot. The
-bundle's files are regular files in the image; only the `/run` tree contains symlinks, which also keeps
-the OCI chunker away from its symlink/xattr corruption bug.
+`gregos-nix-graphics.service` bind-mounts the bundle at `/run/opengl-driver` on every boot. The bundle
+stays a tree of regular files in the image, so the OCI chunker never sees its symlink/xattr corruption
+pattern, and the read-only mount is visible inside Nix's `buildFHSEnv` wrappers (umu-launcher, Faugus,
+Steam). Those wrappers bind `/run` but replace `/usr`, so the previous symlink farm into
+`/usr/lib/gregos/nix-graphics` went dead inside them and Proton could not load an EGL/Vulkan driver.
 
 - **OpenGL / Vulkan / video**: host Mesa DRI, Vulkan, VA-API and VDPAU on AMD/Intel; the host NVIDIA
   userspace stack on the proprietary NVIDIA variants; and host Mesa NVK + Zink on `gregos-nova`.
@@ -656,8 +658,8 @@ not copied. 32-bit host applications continue to use the host stack directly.
   updates. `auto-optimise-store` hard-links identical store files, and the default weekly
   `nix-collect-garbage --delete-older-than 14d` removes older generations and their unreferenced paths.
 - Image updates replace the host graphics/compute bundle under `/usr/lib/gregos/nix-graphics`;
-  `gregos-nix-graphics.service` recreates `/run/opengl-driver` from it on the next boot. This does not
-  touch `/nix` at all.
+  `gregos-nix-graphics.service` binds `/run/opengl-driver` to the new tree on the next boot. This does
+  not touch `/nix` at all.
 - The first boot initialises the store in `/var/home/nix`; later boots are effectively free. An existing
   store at that path — including one created by an earlier Determinate-based gregOS image — is reused
   as is, so user-installed packages keep working. A store at a different path is not adopted, and `/nix`

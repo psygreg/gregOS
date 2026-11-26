@@ -8,12 +8,13 @@
 # they always match the running kernel and GPU stack (including CUDA and
 # ROCm/OpenCL compute).
 #
-# The bundle is materialised at boot by gregos-nix-graphics.service:
-# every file here is a regular file or a text manifest, never a symlink. The
-# image build copies the host driver dependency closure, rewrites its library
-# paths to the runtime directory and patches each ELF with an RPATH that keeps
-# the closure self-contained. This avoids both the rpm-ostree chunker's
-# corrupted-symlink bug and the most common host/nix ABI mixing problem.
+# The bundle is bind-mounted at /run/opengl-driver by
+# gregos-nix-graphics.service; every file here is a regular file or a text
+# manifest, never a symlink. The image build copies the host driver dependency
+# closure, rewrites its library paths to the runtime directory and patches
+# each ELF with an RPATH that keeps the closure self-contained. This avoids
+# both the rpm-ostree chunker's corrupted-symlink bug and the most common
+# host/nix ABI mixing problem.
 #
 # The image ships Fedora's Nix, which is linked against the image's own glibc;
 # Nix applications from the store bring their own glibc. If a copied host
@@ -287,9 +288,10 @@ if [[ -n "${image_glibc}" ]]; then
     done
 fi
 
-# The manifest is consumed by gregos-nix-graphics.service, which creates the
-# /run tree. Keeping only regular files outside /run means the OCI chunker
-# never sees the symlink-plus-SELinux-xattr pattern it corrupts.
+# The manifest is consumed by gregos-nix-graphics.service, which validates the
+# bundle before bind-mounting it at /run/opengl-driver. Keeping only regular
+# files outside /run means the OCI chunker never sees the
+# symlink-plus-SELinux-xattr pattern it corrupts.
 printf '%s\n' "${libs[@]}" | sort -u > "${bundle}/libs.list"
 
 vulkan_icds="$(find "${bundle}/share/vulkan/icd.d" -maxdepth 1 -type f -name '*.json' \

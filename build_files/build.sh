@@ -841,7 +841,7 @@ if [[ "${BASE_IMAGE:-}" == *nvidia* ]]; then
 EOF
 
     # Nix applications on non-NixOS resolve their GLX vendor through libglvnd.
-    # The host driver bundle is linked at /run/opengl-driver by
+    # The host driver bundle is bind-mounted at /run/opengl-driver by
     # gregos-nix-graphics.service; tell the Nix Xwayland path to use the
     # NVIDIA vendor. Wayland EGL picks 10_nvidia.json from that directory
     # through the __EGL_VENDOR_LIBRARY_FILENAMES set by the bundle build.
@@ -1245,9 +1245,9 @@ done
 ##
 ## Graphics and compute are independent of Nix: the image build copies the host
 ## GPU driver stack into /usr/lib/gregos/nix-graphics, and
-## gregos-nix-graphics.service links it at /run/opengl-driver on every boot.
-## Nix apps therefore use the exact kernel-matched host drivers (Mesa, NVIDIA,
-## CUDA, ROCm, Level Zero/OpenCL) without a per-app wrapper.
+## gregos-nix-graphics.service bind-mounts it at /run/opengl-driver on every
+## boot. Nix apps therefore use the exact kernel-matched host drivers (Mesa,
+## NVIDIA, CUDA, ROCm, Level Zero/OpenCL) without a per-app wrapper.
 ##
 ## Only the daemon, its persistent store and the host graphics/compute bundle
 ## are system-level. Users install everything else through flakes, nix profile
@@ -1257,7 +1257,7 @@ done
 ##   - gregos-nix-store.service (creates the store before the daemon starts)
 ##   - nix.mount / var-home-nix.service (persistent store at /var/home/nix)
 ##   - nix-daemon.service (enabled; creates the daemon socket itself)
-##   - gregos-nix-graphics.service (links /run/opengl-driver at boot)
+##   - gregos-nix-graphics.service (bind-mounts /run/opengl-driver at boot)
 ##   - /usr/bin/home-manager plus the default flake templates under
 ##     /usr/share/gregos/home-manager
 
@@ -1433,7 +1433,7 @@ if [[ ! -s /usr/lib/gregos/nix-graphics/libs.list ]]; then
 fi
 
 if [[ ! -x /usr/libexec/gregos/nix-graphics ]]; then
-    echo "the host graphics linker service script is missing" >&2
+    echo "the host graphics service script is missing" >&2
     exit 1
 fi
 

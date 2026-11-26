@@ -10,8 +10,8 @@
   targets.genericLinux = {
     enable = true;
 
-    # gregOS already links the host GPU stack at /run/opengl-driver and exports
-    # the loader variables system-wide. Do not let Home Manager build and
+    # gregOS already bind-mounts the host GPU stack at /run/opengl-driver and
+    # exports the loader variables system-wide. Do not let Home Manager build and
     # install a second, Nix-owned driver set: that would require `sudo` and
     # would replace the kernel-matched host drivers again on the next boot.
     gpu.enable = false;
