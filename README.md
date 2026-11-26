@@ -452,6 +452,10 @@ bundle are system-level; packages and development environments are user-level fl
   `nixbld-10` through `sysusers.d/nix.conf`.
 - **Sandbox shell** — Fedora's Nix uses `/usr/bin/busybox` as the sandbox `/bin/sh`; the image installs
   `busybox` so builds that are not available from the binary cache still work.
+- **NixOS-compatible timezone path** — `/etc/zoneinfo` is a symlink to `/usr/share/zoneinfo`. Nix packages
+  and their bubblewrap wrappers expect the NixOS timezone location `/etc/zoneinfo`; without the link,
+  wrapped packages fail at startup with `bwrap: Can't find source path /etc/zoneinfo: No such file or
+  directory`.
 - **Flakes out of the box** — Fedora's `/etc/nix/nix.conf` sets
   `experimental-features = nix-command flakes`, `extra-nix-path = nixpkgs=flake:nixpkgs` and the Fedora
   CA bundle.

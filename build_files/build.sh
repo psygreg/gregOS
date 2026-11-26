@@ -1286,6 +1286,27 @@ if ! nix --version | grep -q '^nix (Nix) '; then
     exit 1
 fi
 
+# Nixpkgs' packages and their bubblewrap wrappers expect the NixOS timezone
+# path /etc/zoneinfo, not Fedora's /usr/share/zoneinfo. Wrapped packages bind
+# /etc/zoneinfo into their sandbox, so without the NixOS-style link every
+# bwrap-wrapped application fails at startup with:
+#   bwrap: Can't find source path /etc/zoneinfo: No such file or directory
+# The link itself is shipped in system_files (applied with the image files
+# above); verify it here so a future cleanup cannot silently reintroduce the
+# failure.
+if [[ ! -d /usr/share/zoneinfo ]]; then
+    echo "/usr/share/zoneinfo is missing; cannot provide the Nix /etc/zoneinfo path" >&2
+    exit 1
+fi
+if [[ ! -L /etc/zoneinfo ]] || [[ "$(readlink /etc/zoneinfo)" != "/usr/share/zoneinfo" ]]; then
+    echo "/etc/zoneinfo is not a symlink to /usr/share/zoneinfo (got: $(readlink /etc/zoneinfo 2>/dev/null || echo 'not a symlink'))" >&2
+    exit 1
+fi
+if [[ ! -r /etc/zoneinfo/UTC ]]; then
+    echo "/etc/zoneinfo does not resolve to a readable timezone database" >&2
+    exit 1
+fi
+
 # gregOS settings live in /etc/nix/nix.custom.conf (shipped in system_files);
 # the RPM-owned /etc/nix/nix.conf gets one include line so they survive package
 # updates.
