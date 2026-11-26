@@ -841,10 +841,11 @@ if [[ "${BASE_IMAGE:-}" == *nvidia* ]]; then
 EOF
 
     # Nix applications on non-NixOS resolve their GLX vendor through libglvnd.
-    # The host driver bundle is bind-mounted at /run/opengl-driver by
-    # gregos-nix-graphics.service; tell the Nix Xwayland path to use the
-    # NVIDIA vendor. Wayland EGL picks 10_nvidia.json from that directory
-    # through the __EGL_VENDOR_LIBRARY_FILENAMES set by the bundle build.
+    # The host driver bundles are bind-mounted at /run/opengl-driver and
+    # /run/opengl-driver-32 by gregos-nix-graphics.service; tell the Nix
+    # Xwayland path to use the NVIDIA vendor. Wayland EGL picks 10_nvidia.json
+    # from those directories through the __EGL_VENDOR_LIBRARY_FILENAMES set by
+    # the bundle build.
     if ! grep -q '^__GLX_VENDOR_LIBRARY_NAME=' /etc/environment 2>/dev/null; then
         printf '%s\n' '__GLX_VENDOR_LIBRARY_NAME=nvidia' >> /etc/environment
     fi
@@ -1243,13 +1244,15 @@ done
 ## shipped Home Manager launcher, which builds per-user profiles through the
 ## daemon.
 ##
-## Graphics and compute are independent of Nix: the image build copies the host
-## GPU driver stack into /usr/lib/gregos/nix-graphics, and
-## gregos-nix-graphics.service bind-mounts it at /run/opengl-driver on every
-## boot. Nix apps therefore use the exact kernel-matched host drivers (Mesa,
-## NVIDIA, CUDA, ROCm, Level Zero/OpenCL) without a per-app wrapper.
+## Graphics and compute are independent of Nix: the image build copies the
+## host GPU driver stack into /usr/lib/gregos/nix-graphics (64-bit) and
+## /usr/lib/gregos/nix-graphics-32 (32-bit), and
+## gregos-nix-graphics.service bind-mounts them at /run/opengl-driver and
+## /run/opengl-driver-32 on every boot. Nix apps therefore use the exact
+## kernel-matched host drivers (Mesa, NVIDIA, CUDA, ROCm, Level Zero/OpenCL)
+## without a per-app wrapper, in both architectures.
 ##
-## Only the daemon, its persistent store and the host graphics/compute bundle
+## Only the daemon, its persistent store and the host graphics/compute bundles
 ## are system-level. Users install everything else through flakes, nix profile
 ## or Home Manager, exactly as on any other Nix installation.
 ##
@@ -1257,7 +1260,7 @@ done
 ##   - gregos-nix-store.service (creates the store before the daemon starts)
 ##   - nix.mount / var-home-nix.service (persistent store at /var/home/nix)
 ##   - nix-daemon.service (enabled; creates the daemon socket itself)
-##   - gregos-nix-graphics.service (bind-mounts /run/opengl-driver at boot)
+##   - gregos-nix-graphics.service (bind-mounts both runtime trees at boot)
 ##   - /usr/bin/home-manager plus the default flake templates under
 ##     /usr/share/gregos/home-manager
 
@@ -1420,10 +1423,33 @@ for nix_environment_file in /etc/environment /usr/lib/environment.d/10-gregos-ni
     fi
 done
 
-# Build the host graphics/compute bundle. This is deliberately an image-build
+## 32-bit userspace for the second driver bundle. Nix's FHS environment looks
+## for /run/opengl-driver-32 on x86_64; without the i686 Mesa/NVIDIA libraries
+## 32-bit Wine/Proton games only see the 64-bit ICDs.
+if [[ "$(uname -m)" == "x86_64" ]]; then
+    for mesa32_package in mesa-vulkan-drivers.i686 mesa-dri-drivers.i686; do
+        if ! rpm -q "${mesa32_package}" >/dev/null 2>&1; then
+            # NVIDIA supplies its own 32-bit Vulkan/GL stack; Mesa is only a
+            # fallback there, so a missing Mesa i686 subpackage is not fatal.
+            if [[ "${BASE_IMAGE:-}" == *nvidia* ]]; then
+                dnf5 install -y "${mesa32_package}" || true
+            else
+                dnf5 install -y "${mesa32_package}"
+            fi
+        fi
+    done
+    if [[ "${BASE_IMAGE:-}" == *nvidia* ]] \
+        && ! compgen -G '/usr/lib/libGLX_nvidia.so*' >/dev/null \
+        && ! compgen -G '/usr/lib32/libGLX_nvidia.so*' >/dev/null \
+        && ! compgen -G '/usr/lib/i386-linux-gnu/libGLX_nvidia.so*' >/dev/null; then
+        dnf5 install -y xorg-x11-drv-nvidia-libs.i686
+    fi
+fi
+
+# Build the host graphics/compute bundles. This is deliberately an image-build
 # step, not a Nix build: it keeps the driver ABI matched to the running host
 # kernel and rejects a host driver whose glibc requirement is newer than the
-# image's own glibc. The bundle also carries the CUDA/ROCm/OpenCL/Level Zero
+# image's own glibc. The bundles also carry the CUDA/ROCm/OpenCL/Level Zero
 # user-space libraries.
 /ctx/nix-host-graphics.sh
 
@@ -1451,12 +1477,48 @@ if ! compgen -G "/usr/lib/gregos/nix-graphics/share/vulkan/icd.d/*.json" >/dev/n
     exit 1
 fi
 
+# 32-bit Nix applications (Wine/Proton, 32-bit launchers) need the second
+# bundle. On x86_64 it must exist and carry at least one Vulkan ICD; on other
+# architectures the orchestrator skips it.
+if [[ "$(uname -m)" == "x86_64" ]]; then
+    if [[ ! -s /usr/lib/gregos/nix-graphics-32/libs.list ]]; then
+        echo "the 32-bit host graphics bundle is empty (no /usr/lib/gregos/nix-graphics-32/libs.list)" >&2
+        exit 1
+    fi
+    if ! compgen -G "/usr/lib/gregos/nix-graphics-32/share/vulkan/icd.d/*.json" >/dev/null; then
+        echo "the 32-bit host graphics bundle contains no Vulkan ICD" >&2
+        exit 1
+    fi
+    if ! grep -q '/run/opengl-driver-32/lib' /usr/lib/environment.d/20-gregos-nix-graphics.conf; then
+        echo "the host graphics environment does not expose /run/opengl-driver-32" >&2
+        exit 1
+    fi
+    if ! grep -q '/run/opengl-driver-32/share/vulkan/icd.d/' \
+        /usr/lib/environment.d/20-gregos-nix-graphics.conf; then
+        echo "the host graphics environment has no 32-bit Vulkan ICDs" >&2
+        exit 1
+    fi
+fi
+
 # A CUDA-capable base must actually contribute the driver API, otherwise the
 # host bundle was built from a Mesa-only stack.
 if [[ "${BASE_IMAGE:-}" == *nvidia* ]] \
     && ! grep -qx 'lib/libcuda.so.1' /usr/lib/gregos/nix-graphics/libs.list; then
     echo "NVIDIA base image detected but the host graphics bundle has no libcuda.so.1" >&2
     exit 1
+fi
+
+# The NVIDIA variants must also provide the 32-bit userspace, otherwise 32-bit
+# Wine/Proton games fall back to llvmpipe or fail to create a Vulkan instance.
+if [[ "${BASE_IMAGE:-}" == *nvidia* ]]; then
+    if ! grep -q '^lib/libGLX_nvidia\.so' /usr/lib/gregos/nix-graphics-32/libs.list; then
+        echo "NVIDIA base image detected but the 32-bit host graphics bundle has no libGLX_nvidia" >&2
+        exit 1
+    fi
+    if ! compgen -G "/usr/lib/gregos/nix-graphics-32/share/vulkan/icd.d/nvidia_icd*.json" >/dev/null; then
+        echo "NVIDIA base image detected but the 32-bit bundle has no NVIDIA Vulkan ICD" >&2
+        exit 1
+    fi
 fi
 
 # gregOS-nova has no proprietary NVIDIA userspace, so its Nix bundle must not
@@ -1474,6 +1536,24 @@ if [[ "${image_variant}" == "nova" ]]; then
     if grep -q '^lib/libnvidia-' /usr/lib/gregos/nix-graphics/libs.list; then
         echo "the host graphics bundle contains proprietary NVIDIA libraries on gregOS-nova" >&2
         exit 1
+    fi
+
+    if [[ "$(uname -m)" == "x86_64" ]]; then
+        for nova_nix_lib in lib/libvulkan_nouveau.so lib/dri/nouveau_dri.so lib/dri/zink_dri.so; do
+            if ! grep -qx "${nova_nix_lib}" /usr/lib/gregos/nix-graphics-32/libs.list; then
+                echo "the 32-bit host graphics bundle is missing ${nova_nix_lib} for gregOS-nova" >&2
+                exit 1
+            fi
+        done
+        if grep -q '^lib/libnvidia-' /usr/lib/gregos/nix-graphics-32/libs.list; then
+            echo "the 32-bit host graphics bundle contains proprietary NVIDIA libraries on gregOS-nova" >&2
+            exit 1
+        fi
+        if ! grep -q '/run/opengl-driver-32/lib/libvulkan_nouveau.so' \
+            /usr/lib/gregos/nix-graphics-32/share/vulkan/icd.d/nouveau_icd.i686.json; then
+            echo "the 32-bit host graphics bundle does not point the nouveau Vulkan ICD at NVK" >&2
+            exit 1
+        fi
     fi
 
     if ! grep -q '/run/opengl-driver/lib/libvulkan_nouveau.so' \

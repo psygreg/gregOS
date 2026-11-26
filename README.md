@@ -582,58 +582,65 @@ convention). On a non-NixOS system that directory does not exist by default. gre
 **host** GPU stack rather than a Nix-built copy, so the driver ABI always matches the running kernel and
 out-of-tree driver (including CUDA and ROCm).
 
-The image build runs `build_files/nix-host-graphics.sh`, which:
+The image build runs `build_files/nix-host-graphics.sh`, which builds two bundles:
+
+- `/usr/lib/gregos/nix-graphics` for 64-bit Nix applications at `/run/opengl-driver`;
+- `/usr/lib/gregos/nix-graphics-32` for 32-bit Nix applications at `/run/opengl-driver-32` on x86_64.
+
+Each bundle:
 
 - collects the host OpenGL/EGL/GLES vendor libraries, DRI drivers, Vulkan ICDs, VA-API/VDPAU drivers,
   NVIDIA userspace libraries (or Mesa NVK on `gregos-nova`), CUDA interfaces (`libcuda`, NVML,
   NVDEC/NVENC, OptiX), and whichever ROCm/HSA/HIP, Level Zero and OpenCL vendor libraries the base
-  image provides;
-- copies their complete ELF dependency closure into `/usr/lib/gregos/nix-graphics/lib`, excluding glibc
-  itself;
-- patches every copied ELF with an RPATH pointing at the runtime bundle, so it never falls back to a
-  host path that could mix a second glibc into a Nix process;
+  image provides for that architecture;
+- copies their complete ELF dependency closure, excluding glibc itself, and patches every copied ELF
+  with an RPATH pointing at the matching runtime bundle;
 - rewrites Vulkan ICD, EGL vendor, EGL external-platform and OpenCL descriptors to the runtime paths;
-- fails the build if a `DT_NEEDED` library is missing, or if a host driver needs a newer `GLIBC_2.x`
-  symbol version than the image provides. That is the ABI guard, handled at image build time rather than
-  at runtime.
+- fails the build if a required `DT_NEEDED` library is missing, or if a host driver needs a newer
+  `GLIBC_2.x` symbol version than the image provides.
+
+The build is vendor-agnostic: Mesa/AMD/Intel libraries, NVIDIA's userspace libraries and (on
+`gregos-nova`) Mesa NVK are selected by what the host provides. Proprietary NVIDIA images install the
+i686 NVIDIA userspace alongside the 64-bit one, and the standard/nova images install the i686 Mesa
+packages, so switching the GPU vendor only requires the matching driver packages (or image variant).
 
 Nix applications load these drivers with their own glibc from nixpkgs. Current nixpkgs is at least as
 new as this Fedora base, so the host drivers load cleanly; a very old nixpkgs pin may predate the
 symbols a current host driver uses.
 
-`gregos-nix-graphics.service` bind-mounts the bundle at `/run/opengl-driver` on every boot. The bundle
-stays a tree of regular files in the image, so the OCI chunker never sees its symlink/xattr corruption
-pattern, and the read-only mount is visible inside Nix's `buildFHSEnv` wrappers (umu-launcher, Faugus,
-Steam). Those wrappers bind `/run` but replace `/usr`, so the previous symlink farm into
-`/usr/lib/gregos/nix-graphics` went dead inside them and Proton could not load an EGL/Vulkan driver.
+`gregos-nix-graphics.service` bind-mounts both bundles on every boot. The bundles stay trees of regular
+files in the image, so the OCI chunker never sees the symlink/xattr corruption pattern, and the
+read-only mounts are visible inside Nix's `buildFHSEnv` wrappers (umu-launcher, Faugus, Steam). Those
+wrappers bind `/run` but replace `/usr`, so a symlink farm into `/usr/lib/gregos/nix-graphics` would go
+dead inside them and Proton could not load an EGL/Vulkan driver.
 
 - **OpenGL / Vulkan / video**: host Mesa DRI, Vulkan, VA-API and VDPAU on AMD/Intel; the host NVIDIA
   userspace stack on the proprietary NVIDIA variants; and host Mesa NVK + Zink on `gregos-nova`.
-  `LD_LIBRARY_PATH=/run/opengl-driver/lib`, `LIBGL_DRIVERS_PATH`, `LIBVA_DRIVERS_PATH`,
-  `VDPAU_DRIVER_PATH`, `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`,
-  `__EGL_VENDOR_LIBRARY_FILENAMES` and `__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS` are set through
-  `/etc/environment`, `/usr/lib/environment.d` and `/etc/profile.d`, so Nix applications use the bundle
-  without a `nixGL` wrapper. Vulkan layers are not bundled: the loader also scans the host layer
-  directories, and duplicating them would load every layer twice. Nix-installed layers are found
-  through the `XDG_DATA_DIRS` that `nix shell` sets.
+  `LD_LIBRARY_PATH`, `LIBGL_DRIVERS_PATH`, `LIBVA_DRIVERS_PATH`, `VDPAU_DRIVER_PATH`,
+  `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`, `__EGL_VENDOR_LIBRARY_FILENAMES` and
+  `__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS` include both `/run/opengl-driver` and
+  `/run/opengl-driver-32`, so 32-bit and 64-bit Nix applications use the bundles without a `nixGL`
+  wrapper. Vulkan layers are not bundled: the loader also scans the host layer directories, and
+  duplicating them would load every layer twice. Nix-installed layers are found through the
+  `XDG_DATA_DIRS` that `nix shell` sets.
 - **NVIDIA CUDA**: `libcuda.so.1`, NVML, NVDEC/NVENC, OptiX and the other host NVIDIA compute libraries
-  are exposed in `/run/opengl-driver/lib`, where Nix CUDA packages expect them.
+  are exposed in both runtime trees, where Nix CUDA packages expect them.
   `__GLX_VENDOR_LIBRARY_NAME=nvidia` is set system-wide on the proprietary NVIDIA variants so Nix
   Xwayland applications select the NVIDIA vendor; Wayland EGL picks `10_nvidia.json`. `gregos-nova` has
-  no CUDA or NVML: the open stack does not implement them, so the bundle carries NVK and Mesa's DRI
+  no CUDA or NVML: the open stack does not implement them, so the bundles carry NVK and Mesa's DRI
   drivers only.
 - **Other compute**: the host ROCm/HSA/HIP libraries and `/opt/rocm/lib` (when present), Level Zero
-  drivers, and OpenCL ICDs (Mesa Rusticl, Intel, NVIDIA) are included. `OCL_ICD_VENDORS` points Nix
-  OpenCL clients at the bundle.
+  drivers, and OpenCL ICDs (Mesa Rusticl, Intel, NVIDIA) are included where the corresponding
+  architecture provides them. `OCL_ICD_VENDORS` points Nix OpenCL clients at the bundles.
 - **Device access**: a udev rule adds logind `uaccess` ACLs for the active seat user on DRM card/render
   nodes, `/dev/kfd` and `/dev/nvidia*`. Existing modes and group ownership are not changed; users who
   log in through a seat (the normal desktop case) get access without being added to additional groups.
   Compute nodes therefore work for Nix applications as they do for host ones.
 
-On `gregos-nova`, the bundle is built from the same host Mesa that runs the desktop: `libvulkan_nouveau.so`
-(the NVK ICD) plus `nouveau_dri`/`zink_dri`. The build verifies that all three are in the bundle and
-fails if a `libnvidia-*` library appears, so a Nix application cannot silently pick up the proprietary
-stack on this variant.
+On `gregos-nova`, the bundles are built from the same host Mesa that runs the desktop:
+`libvulkan_nouveau.so` (the NVK ICD) plus `nouveau_dri`/`zink_dri`. The build verifies that all three
+are present in both architectures and fails if a `libnvidia-*` library appears, so a Nix application
+cannot silently pick up the proprietary stack on this variant.
 
 Verify acceleration with Nix applications:
 
@@ -643,8 +650,8 @@ nix shell nixpkgs#vulkan-tools --command vulkaninfo
 nix shell nixpkgs#clinfo --command clinfo       # OpenCL, when a host ICD exists
 ```
 
-The bundle is 64-bit. 32-bit Nix GPU applications are not covered; the host 32-bit driver libraries are
-not copied. 32-bit host applications continue to use the host stack directly.
+32-bit Nix applications (Wine/Proton, Battle.net and other 32-bit launchers) now find their drivers in
+`/run/opengl-driver-32`; 32-bit host applications continue to use the host stack directly.
 
 ## Updates, persistence and limits
 

@@ -1,60 +1,80 @@
 #!/bin/bash
 #
-# Expose the host graphics/compute driver bundle at /run/opengl-driver.
+# Expose the host graphics/compute driver bundles at the NixOS runtime paths:
 #
-# Nixpkgs' libglvnd and Vulkan loader look for drivers in this directory. The
-# image build creates a regular-file bundle under
-# /usr/lib/gregos/nix-graphics (libraries copied from the host GPU stack, with
-# their ELF dependency closure and RPATH patched at build time); this service
-# exposes that bundle on every boot.
+#   /run/opengl-driver     64-bit host drivers
+#   /run/opengl-driver-32  32-bit host drivers
 #
-# The bundle is bind-mounted instead of symlinked. Nix buildFHSEnv wrappers
+# Nixpkgs' libglvnd, Vulkan loader and the NixOS graphics layout look for
+# drivers in these directories. The image build creates regular-file bundles
+# under /usr/lib/gregos (libraries copied from the host GPU stack, with their
+# ELF dependency closure and RPATH patched at build time); this service
+# exposes them on every boot.
+#
+# The bundles are bind-mounted instead of symlinked. Nix buildFHSEnv wrappers
 # (umu-launcher, Faugus, Steam) bind /run but replace /usr with their own
 # root, so a /run/opengl-driver symlink farm pointing into /usr disappears
-# inside them and Proton cannot load an EGL/Vulkan driver. The mount is made
-# read-only because the bundle belongs to the immutable image.
+# inside them and Proton cannot load an EGL/Vulkan driver. The mounts are made
+# read-only because the bundles belong to the immutable image.
 #
-# The same tree exposes CUDA, ROCm, Level Zero and OpenCL vendor libraries so
+# The same trees expose CUDA, ROCm, Level Zero and OpenCL vendor libraries so
 # Nix applications can use the host GPU compute stack. Device access is
 # handled by udev uaccess ACLs on /dev/dri, /dev/kfd and /dev/nvidia*.
 
 set -euo pipefail
 
-bundle="${1:-/usr/lib/gregos/nix-graphics}"
-runtime="${2:-/run/opengl-driver}"
+bundle64="${1:-/usr/lib/gregos/nix-graphics}"
+runtime64="${2:-/run/opengl-driver}"
+bundle32="${3:-/usr/lib/gregos/nix-graphics-32}"
+runtime32="${4:-/run/opengl-driver-32}"
 
-case "${runtime}" in
-    /run/?*|/tmp/?*) ;;
+case "${runtime64}:${runtime32}" in
+    /run/?*:/run/?*|/tmp/?*:/tmp/?*) ;;
     *)
-        echo "refusing unsafe runtime path: ${runtime}" >&2
+        echo "refusing unsafe runtime path: ${runtime64}:${runtime32}" >&2
         exit 1
         ;;
 esac
 
-if [[ ! -r "${bundle}/libs.list" ]]; then
-    echo "host graphics bundle is missing: ${bundle}/libs.list" >&2
-    exit 1
-fi
+mount_bundle() {
+    local bundle="$1" runtime="$2" rel
 
-# Validate the manifest before exposing the tree: a bundle missing a driver
-# is worse than no bundle at all.
-while IFS= read -r rel; do
-    [[ -n "${rel}" ]] || continue
-    if [[ ! -e "${bundle}/${rel}" ]]; then
-        echo "host graphics bundle file is missing: ${bundle}/${rel}" >&2
-        exit 1
+    if [[ ! -r "${bundle}/libs.list" ]]; then
+        echo "host graphics bundle is missing: ${bundle}/libs.list" >&2
+        return 1
     fi
-done < "${bundle}/libs.list"
 
-# A previous run may still hold the path (service restart, manual mount).
-if [[ ! -L "${runtime}" ]] && mountpoint -q "${runtime}"; then
-    umount -l "${runtime}"
+    # Validate the manifest before exposing the tree: a bundle missing a
+    # driver is worse than no bundle at all.
+    while IFS= read -r rel; do
+        [[ -n "${rel}" ]] || continue
+        if [[ ! -e "${bundle}/${rel}" ]]; then
+            echo "host graphics bundle file is missing: ${bundle}/${rel}" >&2
+            return 1
+        fi
+    done < "${bundle}/libs.list"
+
+    # A previous run may still hold the path (service restart, manual mount).
+    if [[ ! -L "${runtime}" ]] && mountpoint -q "${runtime}"; then
+        umount -l "${runtime}"
+    fi
+    rm -rf "${runtime}"
+    install -d "${runtime}"
+
+    mount --bind "${bundle}" "${runtime}"
+    mount -o remount,bind,ro "${runtime}" \
+        || echo "warning: could not remount ${runtime} read-only" >&2
+
+    echo "Bind-mounted ${runtime} to ${bundle}"
+}
+
+mount_bundle "${bundle64}" "${runtime64}"
+
+if [[ -r "${bundle32}/libs.list" ]]; then
+    mount_bundle "${bundle32}" "${runtime32}"
+else
+    echo "no 32-bit host graphics bundle; skipping ${runtime32}" >&2
+    if [[ ! -L "${runtime32}" ]] && mountpoint -q "${runtime32}"; then
+        umount -l "${runtime32}"
+    fi
 fi
-rm -rf "${runtime}"
-install -d "${runtime}"
-
-mount --bind "${bundle}" "${runtime}"
-mount -o remount,bind,ro "${runtime}" \
-    || echo "warning: could not remount ${runtime} read-only" >&2
-
-echo "Bind-mounted ${runtime} to the host graphics/compute bundle"

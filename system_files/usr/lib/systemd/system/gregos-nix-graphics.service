@@ -9,6 +9,7 @@ ConditionPathExists=/usr/lib/gregos/nix-graphics/libs.list
 Type=oneshot
 ExecStart=/usr/libexec/gregos/nix-graphics
 ExecStop=-/usr/bin/umount -l /run/opengl-driver
+ExecStop=-/usr/bin/umount -l /run/opengl-driver-32
 RemainAfterExit=yes
 
 [Install]

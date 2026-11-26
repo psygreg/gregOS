@@ -1,20 +1,24 @@
 #!/bin/bash
 
-# Build the host graphics/compute driver bundle used by Nix applications.
+# Build the host graphics/compute driver bundles used by Nix applications.
 #
-# Nixpkgs' libglvnd and Vulkan loader look for drivers in /run/opengl-driver.
-# On NixOS that directory contains drivers built from the same nixpkgs as the
-# applications. This image deliberately uses the *host* drivers instead, so
-# they always match the running kernel and GPU stack (including CUDA and
-# ROCm/OpenCL compute).
+# Nixpkgs' libglvnd, Vulkan loader and the NixOS graphics layout expect:
 #
-# The bundle is bind-mounted at /run/opengl-driver by
-# gregos-nix-graphics.service; every file here is a regular file or a text
-# manifest, never a symlink. The image build copies the host driver dependency
-# closure, rewrites its library paths to the runtime directory and patches
-# each ELF with an RPATH that keeps the closure self-contained. This avoids
-# both the rpm-ostree chunker's corrupted-symlink bug and the most common
-# host/nix ABI mixing problem.
+#   /run/opengl-driver     64-bit host drivers
+#   /run/opengl-driver-32  32-bit host drivers (on x86_64)
+#
+# On NixOS both directories are built from nixpkgs. This image deliberately
+# uses the *host* drivers instead, so they always match the running kernel and
+# GPU stack (including CUDA and ROCm/OpenCL). The image build creates two
+# regular-file bundles under /usr/lib/gregos; gregos-nix-graphics.service
+# bind-mounts them at the runtime paths on every boot.
+#
+# Every file in a bundle is a regular file or a text manifest, never a symlink.
+# The image build copies the host driver dependency closure, rewrites its
+# library paths to the runtime directory and patches each ELF with an RPATH
+# that keeps the closure self-contained. This avoids both the rpm-ostree
+# chunker's corrupted-symlink bug and the most common host/nix ABI mixing
+# problem.
 #
 # The image ships Fedora's Nix, which is linked against the image's own glibc;
 # Nix applications from the store bring their own glibc. If a copied host
@@ -24,8 +28,128 @@
 
 set -euo pipefail
 
-bundle=/usr/lib/gregos/nix-graphics
-rpath="/run/opengl-driver/lib:/run/opengl-driver/lib/dri:\$ORIGIN"
+bundle_root="${NIX_GRAPHICS_BUNDLE_ROOT:-/usr/lib/gregos}"
+runtime_root="${NIX_GRAPHICS_RUNTIME_ROOT:-/run}"
+environment_file="${NIX_GRAPHICS_ENVIRONMENT:-/etc/environment}"
+env_dir="${NIX_GRAPHICS_ENV_DIR:-/usr/lib/environment.d}"
+profile_dir="${NIX_GRAPHICS_PROFILE_DIR:-/etc/profile.d}"
+vulkan_icd_dir="${NIX_GRAPHICS_VULKAN_ICD_DIR:-/usr/share/vulkan/icd.d}"
+
+bits="${1:-}"
+fragment="${2:-}"
+
+if [[ -z "${bits}" ]]; then
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "${tmpdir}"' EXIT
+
+    "${0}" 64 "${tmpdir}/64.env"
+    if [[ "$(uname -m)" == "x86_64" ]]; then
+        "${0}" 32 "${tmpdir}/32.env"
+    else
+        : > "${tmpdir}/32.env"
+    fi
+
+    declare -A parts=()
+    for arch in 64 32; do
+        [[ -s "${tmpdir}/${arch}.env" ]] || continue
+        while IFS='=' read -r key value; do
+            [[ -n "${key}" && -n "${value}" ]] || continue
+            if [[ -n "${parts[${key}]:-}" ]]; then
+                parts["${key}"]+=":${value}"
+            else
+                parts["${key}"]="${value}"
+            fi
+        done < "${tmpdir}/${arch}.env"
+    done
+
+    have32=0
+    [[ -s "${tmpdir}/32.env" ]] && have32=1
+
+    runtime64="${runtime_root}/opengl-driver"
+    runtime32="${runtime_root}/opengl-driver-32"
+
+    if ((have32)); then
+        lib_dirs="${runtime64}/lib:${runtime32}/lib"
+        dri_dirs="${runtime64}/lib/dri:${runtime32}/lib/dri"
+    else
+        lib_dirs="${runtime64}/lib"
+        dri_dirs="${runtime64}/lib/dri"
+    fi
+
+    env_vars=(
+        "LD_LIBRARY_PATH=${lib_dirs}"
+        "LIBGL_DRIVERS_PATH=${dri_dirs}"
+        "LIBVA_DRIVERS_PATH=${dri_dirs}"
+    )
+    for key in VDPAU_DRIVER_PATH VK_DRIVER_FILES VK_ICD_FILENAMES \
+        __EGL_VENDOR_LIBRARY_FILENAMES __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS \
+        OCL_ICD_VENDORS; do
+        [[ -n "${parts[${key}]:-}" ]] && env_vars+=("${key}=${parts[${key}]}")
+    done
+
+    env_file="${env_dir}/20-gregos-nix-graphics.conf"
+    profile_file="${profile_dir}/20-gregos-nix-graphics.sh"
+    install -d "${env_dir}" "${profile_dir}"
+
+    {
+        echo "# gregOS: host graphics/compute drivers for Nix applications"
+        printf '%s\n' "${env_vars[@]}"
+    } > "${env_file}"
+
+    {
+        echo "# gregOS: host graphics/compute drivers for Nix applications"
+        printf 'export %s\n' "${env_vars[@]}"
+    } > "${profile_file}"
+    chmod 0644 "${env_file}" "${profile_file}"
+
+    set_environment() {
+        local key="${1%%=*}" value="${1#*=}"
+        if grep -q "^${key}=" "${environment_file}" 2>/dev/null; then
+            sed -i "s|^${key}=.*|${key}=${value}|" "${environment_file}"
+        else
+            printf '%s=%s\n' "${key}" "${value}" >> "${environment_file}"
+        fi
+    }
+
+    for env_var in "${env_vars[@]}"; do
+        set_environment "${env_var}"
+    done
+
+    libs64="$(wc -l < "${bundle_root}/nix-graphics/libs.list")"
+    libs32=0
+    if ((have32)); then
+        libs32="$(wc -l < "${bundle_root}/nix-graphics-32/libs.list")"
+    fi
+    if ((have32)); then
+        echo "Host graphics bundles: ${libs64} 64-bit libraries, ${libs32} 32-bit libraries, Vulkan ICDs for both architectures"
+    else
+        echo "Host graphics bundle: ${libs64} 64-bit libraries, Vulkan ICDs"
+    fi
+    exit 0
+fi
+
+case "${bits}" in
+    64)
+        bundle="${bundle_root}/nix-graphics"
+        runtime="${runtime_root}/opengl-driver"
+        lib_token=lib64
+        rpath="${runtime}/lib:${runtime}/lib/dri:\$ORIGIN"
+        lib_dirs=(/usr/lib64 /lib64 /usr/lib /lib)
+        dri_dirs=(/usr/lib64/dri /usr/lib/dri)
+        ;;
+    32)
+        bundle="${bundle_root}/nix-graphics-32"
+        runtime="${runtime_root}/opengl-driver-32"
+        lib_token=lib
+        rpath="${runtime}/lib:${runtime}/lib/dri:\$ORIGIN"
+        lib_dirs=(/usr/lib/i386-linux-gnu /usr/lib32 /lib32 /usr/lib /lib)
+        dri_dirs=(/usr/lib/i386-linux-gnu/dri /usr/lib32/dri /usr/lib/dri)
+        ;;
+    *)
+        echo "unsupported architecture: ${bits}" >&2
+        exit 1
+        ;;
+esac
 
 if ! command -v patchelf >/dev/null 2>&1 \
     || ! command -v readelf >/dev/null 2>&1 \
@@ -43,29 +167,46 @@ declare -A canonical=()
 declare -a libs=()
 declare -a missing=()
 
+elf_bits() {
+    local path="$1" class
+    class="$(LC_ALL=C readelf -h "${path}" 2>/dev/null \
+        | awk -F: '/Class:/ { gsub(/ /, "", $2); print $2; exit }')"
+    case "${class}" in
+        ELF64) printf '%s\n' 64 ;;
+        ELF32) printf '%s\n' 32 ;;
+    esac
+}
+
 resolve_host_lib() {
     local lib="$1" dir found
 
     if [[ "${lib}" = /* ]]; then
-        if [[ -e "${lib}" ]]; then
+        if [[ -e "${lib}" ]] && [[ "$(elf_bits "${lib}")" == "${bits}" ]]; then
             printf '%s\n' "${lib}"
             return 0
         fi
-        return 1
+        # Some vendor descriptors hard-code the 64-bit path even on a system
+        # that also ships the 32-bit library. Fall back to the basename in the
+        # target architecture's library directories.
+        lib="$(basename "${lib}")"
     fi
 
-    for dir in /usr/lib64 /usr/lib /lib64 /lib /usr/lib64/mangohud /opt/rocm/lib; do
-        if [[ -e "${dir}/${lib}" ]]; then
+    for dir in "${lib_dirs[@]}"; do
+        if [[ -e "${dir}/${lib}" ]] \
+            && [[ "$(elf_bits "${dir}/${lib}")" == "${bits}" ]]; then
             printf '%s\n' "${dir}/${lib}"
             return 0
         fi
     done
 
-    found="$(ldconfig -p 2>/dev/null | awk -v name="${lib}" '$1 == name { print $NF; exit }')"
-    if [[ -n "${found}" ]]; then
-        printf '%s\n' "${found}"
-        return 0
-    fi
+    while IFS= read -r found; do
+        if [[ -e "${found}" ]] \
+            && [[ "$(elf_bits "${found}")" == "${bits}" ]]; then
+            printf '%s\n' "${found}"
+            return 0
+        fi
+    done < <(ldconfig -p 2>/dev/null \
+        | awk -v name="${lib}" '$1 == name { print $NF }')
 
     return 1
 }
@@ -77,6 +218,8 @@ add_lib() {
         return 0
     fi
     [[ -e "${src}" || -L "${src}" ]] || return 0
+    [[ "$(elf_bits "${src}")" == "${bits}" ]] || return 0
+
     base="$(basename "${src}")"
     rel="${destdir}/${base}"
 
@@ -113,6 +256,7 @@ add_glob() {
     local dir="$1" destdir="$2" pattern file
     shift 2
 
+    [[ -d "${dir}" ]] || return 0
     for pattern in "$@"; do
         for file in "${dir}"/${pattern}; do
             [[ -e "${file}" || -L "${file}" ]] || continue
@@ -121,40 +265,49 @@ add_glob() {
     done
 }
 
-# Mesa/OpenGL/EGL/Vulkan/VA-API/VDPAU. The glvnd loaders themselves are
-# intentionally not copied: Nix applications must keep their own libGL/libEGL/
-# libvulkan from the Nix store. Only the vendor and DRI plugins use this path.
-#
-# On gregOS-nova this is the entire NVIDIA stack: libvulkan_nouveau.so (NVK)
-# and the nouveau/zink DRI drivers. There is no proprietary userspace to copy.
-add_glob /usr/lib64 lib \
-    'libGLX_*.so*' 'libEGL_*.so*' 'libGLESv1_CM_*.so*' 'libGLESv2_*.so*' \
-    'libglapi.so*' 'libvulkan_*.so*' 'libva*.so*' 'libvdpau*.so*'
-# Layers whose manifest uses a relative library_path (VkLayer_MESA_device_select)
-# are resolved through LD_LIBRARY_PATH, so their libraries must be here even
-# though the manifests themselves stay in /usr/share. Manifests that name an
-# absolute path keep loading their host copy, exactly as for host apps.
-add_glob /usr/lib64 lib 'libVkLayer_*.so*'
-add_glob /usr/lib64/dri lib/dri '*.so'
-if [[ -d /usr/lib64/vdpau ]]; then
+for lib_dir in "${lib_dirs[@]}"; do
+    # Mesa/OpenGL/EGL/Vulkan/VA-API/VDPAU. The glvnd loaders themselves are
+    # intentionally not copied: Nix applications must keep their own libGL/
+    # libEGL/libvulkan from the Nix store. Only the vendor and DRI plugins use
+    # this path.
+    add_glob "${lib_dir}" lib \
+        'libGLX_*.so*' 'libEGL_*.so*' 'libGLESv1_CM_*.so*' 'libGLESv2_*.so*' \
+        'libglapi.so*' 'libvulkan_*.so*' 'libva*.so*' 'libvdpau*.so*'
+    # Layers whose manifest uses a relative library_path (VkLayer_MESA_device_select)
+    # are resolved through LD_LIBRARY_PATH, so their libraries must be here even
+    # though the manifests themselves stay in /usr/share. Manifests that name an
+    # absolute path keep loading their host copy, exactly as for host apps.
+    add_glob "${lib_dir}" lib 'libVkLayer_*.so*'
+
+    # NVIDIA userspace driver and CUDA/compute runtime interfaces.
+    add_glob "${lib_dir}" lib \
+        'libnvidia-*.so*' 'libcuda*.so*' 'libnvcuvid*.so*' 'libnvoptix*.so*' \
+        'libcudadebugger*.so*' 'libnvEncode*.so*'
+
+    # ROCm, Level Zero and OpenCL vendor implementations. The host kernel driver
+    # (amdgpu and /dev/kfd for ROCm) is what makes these usable; the user-space
+    # libraries are exposed through the bundle where Nix applications can find
+    # them.
+    add_glob "${lib_dir}" lib \
+        'libhsa-runtime64.so*' 'libamdhip64.so*' 'librocblas*.so*' \
+        'librocsolver*.so*' 'librocfft*.so*' 'libmiopen*.so*' 'libhip*.so*' \
+        'libze_*.so*' 'libRusticlOpenCL.so*' 'libigdrcl.so*' 'libnvidia-opencl.so*'
+done
+
+for dri_dir in "${dri_dirs[@]}"; do
+    add_glob "${dri_dir}" lib/dri '*.so'
+done
+
+if [[ "${bits}" == 64 ]]; then
     add_glob /usr/lib64/vdpau lib/vdpau '*.so*'
-fi
-
-# NVIDIA userspace driver and CUDA/compute runtime interfaces.
-add_glob /usr/lib64 lib \
-    'libnvidia-*.so*' 'libcuda*.so*' 'libnvcuvid*.so*' 'libnvoptix*.so*' \
-    'libcudadebugger*.so*' 'libnvEncode*.so*'
-
-# ROCm, Level Zero and OpenCL vendor implementations. The host kernel driver
-# (amdgpu and /dev/kfd for ROCm) is what makes these usable; the user-space
-# libraries are exposed through the bundle where Nix applications can find
-# them.
-add_glob /usr/lib64 lib \
-    'libhsa-runtime64.so*' 'libamdhip64.so*' 'librocblas*.so*' \
-    'librocsolver*.so*' 'librocfft*.so*' 'libmiopen*.so*' 'libhip*.so*' \
-    'libze_*.so*' 'libRusticlOpenCL.so*' 'libigdrcl.so*' 'libnvidia-opencl.so*'
-if [[ -d /opt/rocm/lib ]]; then
-    add_glob /opt/rocm/lib lib 'lib*.so*'
+    if [[ -d /opt/rocm/lib ]]; then
+        add_glob /opt/rocm/lib lib 'lib*.so*'
+    fi
+else
+    for vdpau_dir in \
+        /usr/lib/vdpau /usr/lib32/vdpau /usr/lib/i386-linux-gnu/vdpau; do
+        add_glob "${vdpau_dir}" lib/vdpau '*.so*'
+    done
 fi
 
 # The dependency closure and validation run after all descriptors have added
@@ -164,31 +317,43 @@ fi
 # descriptor files themselves stay regular files in the image and are linked
 # into /run by the boot service.
 rewrite_json() {
-    local src="$1" out="$2" field="$3" lib resolved base
+    local src="$1" out="$2" field="$3" required="$4" lib resolved base
 
     lib="$(jq -r "${field} // empty" "${src}")"
     [[ -n "${lib}" && "${lib}" != "null" ]] || return 0
-    lib="${lib//\$LIB/lib64}"
+    lib="${lib//\$\{LIB\}/${lib_token}}"
+    lib="${lib//\$LIB/${lib_token}}"
 
     resolved="$(resolve_host_lib "${lib}" || true)"
     if [[ -z "${resolved}" ]]; then
-        missing+=("${lib} (library_path in ${src})")
+        if [[ "${required}" == 1 ]]; then
+            missing+=("${lib} (library_path in ${src})")
+        fi
         return 0
     fi
 
     base="$(basename "${resolved}")"
     add_lib "${resolved}" lib
     install -d "$(dirname "${out}")"
-    jq --arg path "/run/opengl-driver/lib/${base}" \
+    jq --arg path "${runtime}/lib/${base}" \
         "${field} = \$path" "${src}" > "${out}"
 }
 
-for src in /usr/share/vulkan/icd.d/*.json; do
+for src in "${vulkan_icd_dir}"/*.json; do
     [[ -e "${src}" ]] || continue
-    case "${src}" in
-        *.i686.json) continue ;;
+    base="$(basename "${src}")"
+    arch=0
+    case "${base}" in
+        *.i686.json|*.x86.json) arch=32 ;;
+        *.x86_64.json|*.amd64.json) arch=64 ;;
     esac
-    rewrite_json "${src}" "${bundle}/share/vulkan/icd.d/$(basename "${src}")" '.ICD.library_path'
+    [[ "${arch}" -ne 0 && "${arch}" -ne "${bits}" ]] && continue
+    required=0
+    if [[ "${arch}" -eq "${bits}" || "${bits}" -eq 64 ]]; then
+        required=1
+    fi
+    rewrite_json "${src}" "${bundle}/share/vulkan/icd.d/${base}" \
+        '.ICD.library_path' "${required}"
 done
 
 # Vulkan layers are deliberately not bundled: the loader always scans the
@@ -198,14 +363,18 @@ done
 
 for src in /usr/share/glvnd/egl_vendor.d/*.json; do
     [[ -e "${src}" ]] || continue
+    required=0
+    [[ "${bits}" == 64 ]] && required=1
     rewrite_json "${src}" "${bundle}/share/glvnd/egl_vendor.d/$(basename "${src}")" \
-        '.ICD.library_path'
+        '.ICD.library_path' "${required}"
 done
 
 for src in /usr/share/egl/egl_external_platform.d/*.json; do
     [[ -e "${src}" ]] || continue
+    required=0
+    [[ "${bits}" == 64 ]] && required=1
     rewrite_json "${src}" "${bundle}/share/egl/egl_external_platform.d/$(basename "${src}")" \
-        '.ICD.library_path'
+        '.ICD.library_path' "${required}"
 done
 
 for icd_dir in /etc/OpenCL/vendors /usr/share/OpenCL/vendors; do
@@ -213,16 +382,19 @@ for icd_dir in /etc/OpenCL/vendors /usr/share/OpenCL/vendors; do
         [[ -e "${src}" ]] || continue
         lib="$(head -n1 "${src}" | tr -d '[:space:]')"
         [[ -n "${lib}" ]] || continue
-        lib="${lib//\$LIB/lib64}"
+        lib="${lib//\$\{LIB\}/${lib_token}}"
+        lib="${lib//\$LIB/${lib_token}}"
         resolved="$(resolve_host_lib "${lib}" || true)"
         if [[ -z "${resolved}" ]]; then
-            missing+=("${lib} (OpenCL ICD ${src})")
+            if [[ "${bits}" == 64 ]]; then
+                missing+=("${lib} (OpenCL ICD ${src})")
+            fi
             continue
         fi
         base="$(basename "${resolved}")"
         add_lib "${resolved}" lib
         install -d "${bundle}/share/OpenCL/vendors"
-        printf '%s\n' "/run/opengl-driver/lib/${base}" \
+        printf '%s\n' "${runtime}/lib/${base}" \
             > "${bundle}/share/OpenCL/vendors/$(basename "${src}")"
     done
 done
@@ -263,7 +435,7 @@ while ((${#queue[@]})); do
 done
 
 if ((${#missing[@]})); then
-    printf 'host graphics dependency closure is incomplete:\n' >&2
+    printf 'host graphics dependency closure is incomplete (%s-bit):\n' "${bits}" >&2
     printf '  %s\n' "${missing[@]}" >&2
     exit 1
 fi
@@ -289,68 +461,35 @@ if [[ -n "${image_glibc}" ]]; then
 fi
 
 # The manifest is consumed by gregos-nix-graphics.service, which validates the
-# bundle before bind-mounting it at /run/opengl-driver. Keeping only regular
+# bundle before bind-mounting it at the runtime path. Keeping only regular
 # files outside /run means the OCI chunker never sees the
 # symlink-plus-SELinux-xattr pattern it corrupts.
 printf '%s\n' "${libs[@]}" | sort -u > "${bundle}/libs.list"
 
 vulkan_icds="$(find "${bundle}/share/vulkan/icd.d" -maxdepth 1 -type f -name '*.json' \
-    -printf '/run/opengl-driver/share/vulkan/icd.d/%f\n' 2>/dev/null | paste -sd: - || true)"
+    -printf "${runtime}/share/vulkan/icd.d/%f\n" 2>/dev/null | paste -sd: - || true)"
 egl_vendors="$(find "${bundle}/share/glvnd/egl_vendor.d" -maxdepth 1 -type f -name '*.json' \
-    -printf '/run/opengl-driver/share/glvnd/egl_vendor.d/%f\n' 2>/dev/null | paste -sd: - || true)"
+    -printf "${runtime}/share/glvnd/egl_vendor.d/%f\n" 2>/dev/null | paste -sd: - || true)"
 egl_platforms=""
 if compgen -G "${bundle}/share/egl/egl_external_platform.d/*.json" >/dev/null; then
-    egl_platforms=/run/opengl-driver/share/egl/egl_external_platform.d
+    egl_platforms="${runtime}/share/egl/egl_external_platform.d"
 fi
 opencl_vendors=""
 if compgen -G "${bundle}/share/OpenCL/vendors/*.icd" >/dev/null; then
-    opencl_vendors=/run/opengl-driver/share/OpenCL/vendors
+    opencl_vendors="${runtime}/share/OpenCL/vendors"
 fi
 vdpau_dir=""
 if compgen -G "${bundle}/lib/vdpau/*.so*" >/dev/null; then
-    vdpau_dir=/run/opengl-driver/lib/vdpau
+    vdpau_dir="${runtime}/lib/vdpau"
 fi
 
-# LD_LIBRARY_PATH is how NixOS exposes /run/opengl-driver/lib too: Nix
-# binaries do not consult /etc/ld.so.cache, so CUDA/NVML/OpenCL libraries
-# that applications dlopen by soname need the bundle on the search path.
-env_vars=(
-    "LD_LIBRARY_PATH=/run/opengl-driver/lib"
-    "LIBGL_DRIVERS_PATH=/run/opengl-driver/lib/dri"
-    "LIBVA_DRIVERS_PATH=/run/opengl-driver/lib/dri"
-)
-[[ -n "${vulkan_icds}" ]] && env_vars+=("VK_DRIVER_FILES=${vulkan_icds}")
-[[ -n "${vulkan_icds}" ]] && env_vars+=("VK_ICD_FILENAMES=${vulkan_icds}")
-[[ -n "${egl_vendors}" ]] && env_vars+=("__EGL_VENDOR_LIBRARY_FILENAMES=${egl_vendors}")
-[[ -n "${egl_platforms}" ]] && env_vars+=("__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS=${egl_platforms}")
-[[ -n "${opencl_vendors}" ]] && env_vars+=("OCL_ICD_VENDORS=${opencl_vendors}")
-[[ -n "${vdpau_dir}" ]] && env_vars+=("VDPAU_DRIVER_PATH=${vdpau_dir}")
-
-env_file=/usr/lib/environment.d/20-gregos-nix-graphics.conf
-profile_file=/etc/profile.d/20-gregos-nix-graphics.sh
-
 {
-    echo "# gregOS: host graphics/compute drivers for Nix applications"
-    printf '%s\n' "${env_vars[@]}"
-} > "${env_file}"
+    [[ -n "${vulkan_icds}" ]] && printf 'VK_DRIVER_FILES=%s\n' "${vulkan_icds}"
+    [[ -n "${vulkan_icds}" ]] && printf 'VK_ICD_FILENAMES=%s\n' "${vulkan_icds}"
+    [[ -n "${egl_vendors}" ]] && printf '__EGL_VENDOR_LIBRARY_FILENAMES=%s\n' "${egl_vendors}"
+    [[ -n "${egl_platforms}" ]] && printf '__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS=%s\n' "${egl_platforms}"
+    [[ -n "${opencl_vendors}" ]] && printf 'OCL_ICD_VENDORS=%s\n' "${opencl_vendors}"
+    [[ -n "${vdpau_dir}" ]] && printf 'VDPAU_DRIVER_PATH=%s\n' "${vdpau_dir}"
+} > "${fragment}"
 
-{
-    echo "# gregOS: host graphics/compute drivers for Nix applications"
-    printf 'export %s\n' "${env_vars[@]}"
-} > "${profile_file}"
-chmod 0644 "${env_file}" "${profile_file}"
-
-set_environment() {
-    local key="${1%%=*}" value="${1#*=}"
-    if grep -q "^${key}=" /etc/environment 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${value}|" /etc/environment
-    else
-        printf '%s=%s\n' "${key}" "${value}" >> /etc/environment
-    fi
-}
-
-for env_var in "${env_vars[@]}"; do
-    set_environment "${env_var}"
-done
-
-echo "Host graphics bundle: ${#libs[@]} libraries, ${vulkan_icds:+Vulkan ICDs, }${egl_vendors:+EGL vendors, }${opencl_vendors:+OpenCL. }"
+echo "Host graphics bundle (${bits}-bit): ${#libs[@]} libraries${vulkan_icds:+, Vulkan ICDs}${egl_vendors:+, EGL vendors}${opencl_vendors:+, OpenCL}"
