@@ -502,8 +502,9 @@ The signing key is shown on the cache's Cachix page (or returned by
 
 `auto-optimise-store` is enabled, so the daemon hard-links identical files between store paths as
 builds finish; old generations then cost little beyond their profile symlink. The default Home Manager
-configuration also runs a weekly `nix-collect-garbage --delete-older-than 14d` to remove old
-generations and the store paths they keep alive.
+configuration also prunes Home Manager and `nix profile` generations older than 14 days once a week,
+always keeping the three newest generations so an infrequently updated profile still has rollbacks,
+and then collects the store paths they no longer keep alive.
 
 Home Manager and flakes use the same system daemon. The image ships a `home-manager` launcher and a
 default configuration; see [Home Manager](#home-manager) below.
@@ -556,9 +557,13 @@ home-manager generations             # list generations
 home-manager switch --rollback       # return to the previous generation
 ```
 
-The default configuration enables `nix.gc` (weekly, deleting generations older than 14 days) so old
-package sets and the store paths they keep alive are reclaimed; adjust `nix.gc.options` or
-`nix.gc.dates` to keep more history.
+The default configuration ships a weekly user timer (`gregos-nix-gc.timer`) that deletes generations
+older than 14 days from the profiles in `~/.local/state/nix/profiles`, always keeps at least the three
+newest generations, and then runs `nix-collect-garbage`. Nix's own `nix.gc` cannot express that floor:
+`--delete-older-than` alone would reduce a profile that has not been switched for two weeks to its
+current generation and leave no rollbacks. Adjust `keep` or `max_age_days` in the `nixGc` script, or
+the timer's `OnCalendar`, to keep more history. Configurations seeded by an earlier image keep their
+old `nix.gc` block; replace it with the template's `nixGc` service to get the three-generation floor.
 
 `targets.genericLinux.gpu` is deliberately disabled in the default configuration. gregOS already
 bind-mounts the host GPU stack at `/run/opengl-driver` and exports the loader variables system-wide;
@@ -658,8 +663,9 @@ nix shell nixpkgs#clinfo --command clinfo       # OpenCL, when a host ICD exists
   `nix profile rollback`/generations handle package-level rollbacks. An image rollback reverts the Nix
   binaries but not the shared store or its database.
 - Home Manager generations live per-user under `~/.local/state/nix/profiles` and are unaffected by image
-  updates. `auto-optimise-store` hard-links identical store files, and the default weekly
-  `nix-collect-garbage --delete-older-than 14d` removes older generations and their unreferenced paths.
+  updates. `auto-optimise-store` hard-links identical store files, and the default weekly cleanup
+  removes generations older than 14 days while retaining the three newest, then collects their
+  unreferenced paths.
 - Image updates replace the host graphics/compute bundle under `/usr/lib/gregos/nix-graphics`;
   `gregos-nix-graphics.service` binds `/run/opengl-driver` to the new tree on the next boot. This does
   not touch `/nix` at all.
