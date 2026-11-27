@@ -44,24 +44,20 @@ environment with a tiling-compositor setup:
   editor for Wayland; Qt apps are themed with `qt6ct`.
 - KDE Plasma and GNOME desktop environments are **removed** at build time, along with most of their
   desktop-specific applications (see `REMOVE_PATTERNS` in [build_files/build.sh](./build_files/build.sh)).
-  Everything else Bazzite ships is untouched: Steam, gamescope, drivers, ujust, Bazzite Portal, Waydroid,
-  Cockpit, the audio stack, and so on. **Bazaar** and **Bold Brew** are removed as well — software and system management is
-  centered on LinuxToys instead.
+  The rest of Bazzite's stack is kept: gamescope, drivers, ujust, Bazzite Portal, Waydroid,
+  Cockpit, the audio stack, and so on. **Bazaar** and **Bold Brew** are removed as well — software and
+  system management is centered on LinuxToys instead.
 - **Selected cross-desktop apps** — Nautilus (`nautilus`), GNOME Keyring (`gnome-keyring` with its
   `gnome-keyring-pam` greetd integration and `seahorse` to manage it), GNOME Disks
   (`gnome-disk-utility`), Showtime (`showtime`), and KDE Connect (`kde-connect`). Nautilus thumbnails
   images via the `glycin-loaders` thumbnailers shipped by the base image (kept through the desktop
   cleanup) and videos via `ffmpegthumbnailer`.
-- **Heroic Games Launcher instead of Lutris** — Lutris is removed; [Heroic](https://heroicgameslauncher.com)
-  is installed at build time from the `.rpm` asset of its latest GitHub release — so every image
-  build automatically picks up the newest version.
-- **[`latencydevil`](https://github.com/psygreg/latencydevil) launcher wrapper** — the low-latency helper
-  for competitive gaming is built in and installed on the system `PATH` (`/usr/bin/latencydevil`,
-  fetched at build time from its latest GitHub release, so image builds automatically pick up new
-  versions). Prefix any game with `latencydevil -- %command%` in *Steam* launch options — or any terminal
-  or Flatpak command with `latencydevil -- …` — to inject GPU-aware low-latency environment variables in
-  front of it; the wrapper `exec`s into the game, leaving nothing extra in the process tree. Run
-  `latencydevil --print` to see the variables it would apply on this system.
+- **No preinstalled game launchers or compatibility tools** — Steam, Lutris and Heroic Games Launcher
+  are not shipped, and ProtonPlus/Protontricks are not installed or offered by the image. The host
+  graphics stack (gamescope, GPU drivers, 32-bit libraries, the Nix graphics bundles and the Proton/Wine
+  file-descriptor limit) stays, so game launchers and tools can be installed on demand — through Nix or
+  LinuxToys at post-install time. [`latencydevil`](https://github.com/psygreg/latencydevil) is likewise
+  handled by LinuxToys at post-install time instead of being baked into the image.
 - **[`niri-resume`](https://github.com/psygreg/niri-resume) session resume** — the apps open when a session
   ends come back at the next login, with their workspace, size, maximized/fullscreen state and position.
   Noctalia's Log out / Shut down / Reboot actions (`dotfiles/noctalia/15-gregos-session-actions.toml`) run
@@ -610,9 +606,9 @@ symbols a current host driver uses.
 
 `gregos-nix-graphics.service` bind-mounts both bundles on every boot. The bundles stay trees of regular
 files in the image, so the OCI chunker never sees the symlink/xattr corruption pattern, and the
-read-only mounts are visible inside Nix's `buildFHSEnv` wrappers (umu-launcher, Faugus, Steam). Those
-wrappers bind `/run` but replace `/usr`, so a symlink farm into `/usr/lib/gregos/nix-graphics` would go
-dead inside them and Proton could not load an EGL/Vulkan driver.
+read-only mounts are visible inside Nix's `buildFHSEnv` wrappers (umu-launcher, Faugus,
+Nix-installed Steam). Those wrappers bind `/run` but replace `/usr`, so a symlink farm into
+`/usr/lib/gregos/nix-graphics` would go dead inside them and Proton could not load an EGL/Vulkan driver.
 
 - **OpenGL / Vulkan / video**: host Mesa DRI, Vulkan, VA-API and VDPAU on AMD/Intel; the host NVIDIA
   userspace stack on the proprietary NVIDIA variants; and host Mesa NVK + Zink on `gregos-nova`.

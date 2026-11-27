@@ -93,76 +93,148 @@ echo "Fetching LinuxToys: ${linuxtoys_url}"
 dnf5 install -y /tmp/linuxtoys.rpm
 rm -f /tmp/linuxtoys.rpm
 
-### Replace Lutris with Heroic Games Launcher
+### Remove game launchers and compatibility tools
 ##
-## Lutris (shipped by Bazzite) is removed in favor of Heroic Games
-## Launcher, installed from its latest GitHub release the same way
-## LinuxToys is: resolve the current RPM asset through the GitHub API and
-## install it. The GITHUB_TOKEN build secret (wired up in build.yml and
-## the Justfile) authenticates the request in CI to avoid unauthenticated
-## API rate limits; local builds fall back to anonymous access. Daily
-## image builds therefore automatically pick up every new Heroic release.
+## gregOS is a general-purpose image: it does not ship game launchers or game
+## compatibility tools. Users install them at post-install time through
+## LinuxToys or Nix; the host graphics stack (gamescope, GPU drivers, 32-bit
+## libraries and the Nix graphics bundles) stays, so those packages work
+## normally when installed.
 ##
-## Heroic's RPM unpacks into /opt/Heroic, but on bootc systems /opt is a
-## symlink into /var (which the deployment does not take from the image),
-## so the packaged tree could not be created during the build and would
-## also be missing on deployed systems. Making /opt a regular image-owned
-## directory instead keeps the application tree with the image; this is
-## the workaround documented in the Containerfile's "[IM]MUTABLE /opt"
-## note.
-
-rm -rf /opt && mkdir /opt
-dnf5 remove -y lutris
-
-heroic_url="$(/ctx/ghcurl https://api.github.com/repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest \
-    | jq -r '.assets[] | select((.name | endswith(".rpm")) and (.name | contains("linux-x86_64"))) | .browser_download_url')"
-echo "Fetching Heroic: ${heroic_url}"
-/ctx/ghcurl "${heroic_url}" -o /tmp/heroic.rpm
-dnf5 install -y /tmp/heroic.rpm
-rm -f /tmp/heroic.rpm
-
-### Built-in: latencydevil launcher wrapper on PATH
+## Bazzite ships Steam and Lutris as RPMs. Steam also comes with Bazzite-owned
+## launcher wrappers and a per-user autostart entry that are not owned by the
+## steam package, so removing the package alone would leave a Steam entry in
+## the app launcher and start Steam at login. Remove the whole set explicitly.
+## Steam's dependency chain is kept: steam-devices (controller udev rules) is
+## hardware support, and gamescope/drivers are shared with Nix and Flatpak
+## gaming software.
 ##
-## gregOS ships the latencydevil launcher wrapper
-## (https://github.com/psygreg/latencydevil) as an image built-in, next to
-## helpers like the niri display-setup script. It takes a launch command,
-## injects GPU-aware low-latency environment variables in front of it, then
-## execs the command - so games launch as "latencydevil -- %command%" in Steam
-## launch options, or "latencydevil -- <command>" in a terminal (Flatpaks
-## included). That wrapper usage is by name, which is why - unlike the display
-## helper, spawned by niri through its full path - the binary is installed on
-## the system PATH as an image-owned file in /usr/bin.
+## Protontricks is not an RPM either: Bazzite ships two wrapper scripts that
+## run its Flatpak. ProtonPlus is not installed in the container image at all;
+## it is only offered by a ujust recipe and by Bazzite Portal (yafti). Remove
+## those hooks so neither can offer or launch the apps. The Flatpak
+## applications themselves, when present, live under /var and are user state:
+## an installed system rebased from Bazzite keeps them until the user
+## uninstalls them, and fresh deployments never get them from this image.
 ##
-## NOT /usr/local/bin, even though that is upstream's own suggested install
-## location: in this base image /usr/local is a symlink to ../var/usrlocal,
-## and /var content is not carried from the image onto deployed hosts (the
-## same problem as /opt, documented in the Containerfile) - a binary placed
-## there during the build would be gone again after the first deployment.
-## /usr/bin is the usual system path: it ships with the image on every PATH,
-## and on deployed systems it is immutable, so removals and replacements of
-## latencydevil happen through image updates like every other built-in.
-##
-## There is no package to install: the GitHub release ships a single
-## self-contained binary named "latencydevil". Download it from the latest
-## release the same way LinuxToys and Heroic above are fetched: resolve the
-## current asset through the GitHub API. The GITHUB_TOKEN build secret (wired
-## up in build.yml and the Justfile) authenticates the request in CI to avoid
-## unauthenticated API rate limits; local builds fall back to anonymous
-## access. Daily image builds therefore automatically pick up every new
-## latencydevil release.
+## Removing Heroic used to require making /opt an image-owned directory (its
+## RPM unpacked into /opt/Heroic). With Heroic gone, /opt keeps Bazzite's
+## default /var/opt symlink.
 
-latencydevil_url="$(/ctx/ghcurl https://api.github.com/repos/psygreg/latencydevil/releases/latest \
-    | jq -r '.assets[] | select(.name == "latencydevil") | .browser_download_url')"
-echo "Fetching latencydevil: ${latencydevil_url}"
-/ctx/ghcurl "${latencydevil_url}" -o /tmp/latencydevil
-install -m 0755 /tmp/latencydevil /usr/bin/latencydevil
-rm -f /tmp/latencydevil
+game_pkgs=""
+for game_pkg in heroic lutris steam; do
+    if rpm -q "${game_pkg}" >/dev/null 2>&1; then
+        game_pkgs+=" ${game_pkg}"
+    fi
+done
+if [[ -n "${game_pkgs// /}" ]]; then
+    echo "Removing game launchers:${game_pkgs}"
+    # shellcheck disable=SC2086  # intentional word-splitting of the list
+    dnf5 -y --setopt=install_weak_deps=False remove ${game_pkgs}
+else
+    echo "No game launcher RPMs are installed; skipping"
+fi
 
-# Fail the build if the binary did not land on PATH as an executable - nothing
-# else ships it, and Steam launch options resolve "latencydevil" through PATH
-# only.
-if [[ ! -x /usr/bin/latencydevil ]]; then
-    echo "latencydevil is missing from /usr/bin after installation" >&2
+# Bazzite's Steam entry points, none of them owned by the steam RPM.
+for steam_file in \
+    /usr/bin/steam \
+    /usr/bin/steamrestart \
+    /usr/bin/bazzite-steam \
+    /usr/bin/bazzite-steam-bpm \
+    /usr/bin/bazzite-steam-firstrun \
+    /usr/share/applications/steam.desktop \
+    /usr/share/applications/bazzite-steam-bpm.desktop \
+    /etc/skel/.config/autostart/steam.desktop; do
+    rm -fv "${steam_file}"
+done
+
+# The steam RPM owns the empty /usr/lib/systemd/{system,user}.conf.d drop-in
+# directories in the base image, and it also ships Bazzite's Proton/Wine esync
+# file-descriptor limit there. Recreate the generic directories (the shader
+# cache drop-in below writes into system.conf.d) and keep the limit as
+# image-owned drop-ins, because games installed through Nix/Flatpak still hit
+# it when Proton/Wine starts.
+for systemd_conf_dir in /usr/lib/systemd/system.conf.d /usr/lib/systemd/user.conf.d; do
+    install -d "${systemd_conf_dir}"
+    cat > "${systemd_conf_dir}/10-gregos-nofile.conf" <<'EOF'
+[Manager]
+# Raise the file descriptor limit for Proton/Wine esync (Proton 5+ expects a
+# hard limit of 1048576). Bazzite previously shipped this with the steam RPM.
+DefaultLimitNOFILE=1024:1048576
+EOF
+done
+
+# Protontricks' Flatpak wrappers.
+rm -fv /usr/bin/protontricks /usr/bin/protontricks-launch
+
+# Bazzite's Flatpak manager only carried a Protontricks override; drop the
+# block so no Protontricks configuration is left in the image.
+if [[ -e /usr/libexec/bazzite-flatpak-manager ]] \
+    && grep -q 'com\.github\.Matoking\.protontricks' /usr/libexec/bazzite-flatpak-manager; then
+    sed -i '/^# Fix permissions for Protontricks$/,/^  com\.github\.Matoking\.protontricks$/d' \
+        /usr/libexec/bazzite-flatpak-manager
+fi
+
+# ProtonPlus: remove the ujust recipe and its import, then its Bazzite Portal
+# entry (the list item runs until the next sibling action).
+rm -fv /usr/share/ublue-os/just/94-bazzite-protonplus.just
+if [[ -e /usr/share/ublue-os/justfile ]]; then
+    sed -i '\#^import "/usr/share/ublue-os/just/94-bazzite-protonplus\.just"$#d' \
+        /usr/share/ublue-os/justfile
+fi
+if [[ -e /usr/share/yafti/yafti.yml ]] \
+    && grep -q '^      - id: "proton-plus"$' /usr/share/yafti/yafti.yml; then
+    awk '
+        /^      - id: "/ {
+            if ($0 ~ /^      - id: "proton-plus"$/) { skip = 1; next }
+            skip = 0
+        }
+        /^  - title:/ { skip = 0 }
+        !skip
+    ' /usr/share/yafti/yafti.yml > /usr/share/yafti/yafti.yml.new
+    mv /usr/share/yafti/yafti.yml.new /usr/share/yafti/yafti.yml
+fi
+
+# Fail the build if a removed launcher, wrapper or offer comes back through a
+# base-image update. Every path here is image-owned; user Flatpaks under /var
+# are deliberately not checked.
+for removed_bin in latencydevil protontricks protontricks-launch \
+                   bazzite-steam bazzite-steam-bpm bazzite-steam-firstrun \
+                   steam steamrestart; do
+    if [[ -e "/usr/bin/${removed_bin}" ]]; then
+        echo "'${removed_bin}' is still present in /usr/bin" >&2
+        exit 1
+    fi
+done
+
+for removed_file in \
+    /usr/share/applications/bazzite-steam-bpm.desktop \
+    /usr/share/applications/steam.desktop \
+    /etc/skel/.config/autostart/steam.desktop \
+    /usr/share/ublue-os/just/94-bazzite-protonplus.just; do
+    if [[ -e "${removed_file}" ]]; then
+        echo "'${removed_file}' is still present after the gaming cleanup" >&2
+        exit 1
+    fi
+done
+
+for game_pkg in heroic lutris steam; do
+    if rpm -q "${game_pkg}" >/dev/null 2>&1; then
+        echo "game launcher package '${game_pkg}' is still installed" >&2
+        exit 1
+    fi
+done
+
+if grep -q '94-bazzite-protonplus\.just' /usr/share/ublue-os/justfile 2>/dev/null; then
+    echo "the ujust file still imports the ProtonPlus recipe" >&2
+    exit 1
+fi
+if grep -q 'com\.github\.Matoking\.protontricks' /usr/libexec/bazzite-flatpak-manager 2>/dev/null; then
+    echo "the Flatpak manager still configures Protontricks" >&2
+    exit 1
+fi
+if grep -q 'id: "proton-plus"' /usr/share/yafti/yafti.yml 2>/dev/null; then
+    echo "Bazzite Portal still offers ProtonPlus" >&2
     exit 1
 fi
 
@@ -170,7 +242,7 @@ fi
 ##
 ## gregOS ships the niri-resume session save/restore helper
 ## (https://github.com/psygreg/niri-resume) as an image built-in, next to
-## helpers like the latencydevil launcher wrapper above. niri has no
+## helpers like the niri display-setup script. niri has no
 ## end-of-session hook, so the session-ending actions themselves run the tool:
 ## Noctalia's Log out / Shut down / Reboot actions are overridden (see
 ## dotfiles/noctalia/15-gregos-session-actions.toml) to run
@@ -185,14 +257,13 @@ fi
 ## "niri-resume restore", which relaunches the recorded apps with their
 ## original command lines and re-places their windows.
 ##
-## Like latencydevil, it ships as a single self-contained binary named
-## "niri-resume" with no package to install: download it from the latest
-## release the same way LinuxToys, Heroic and latencydevil above are fetched -
-## resolve the current asset through the GitHub API. The GITHUB_TOKEN build
-## secret (wired up in build.yml and the Justfile) authenticates the request
-## in CI to avoid unauthenticated API rate limits; local builds fall back to
-## anonymous access. Daily image builds therefore automatically pick up every
-## new niri-resume release.
+## It ships as a single self-contained binary named "niri-resume" with no
+## package to install: download it from the latest release the same way
+## LinuxToys above is fetched - resolve the current asset through the GitHub
+## API. The GITHUB_TOKEN build secret (wired up in build.yml and the Justfile)
+## authenticates the request in CI to avoid unauthenticated API rate limits;
+## local builds fall back to anonymous access. Daily image builds therefore
+## automatically pick up every new niri-resume release.
 
 niri_resume_url="$(/ctx/ghcurl https://api.github.com/repos/psygreg/niri-resume/releases/latest \
     | jq -r '.assets[] | select(.name == "niri-resume") | .browser_download_url')"
@@ -231,11 +302,13 @@ rm -f /etc/systemd/zram-generator.conf
 ##
 ## The base image is Bazzite (Kinoite-based) and ships KDE Plasma. niri +
 ## Noctalia replaces it as the only desktop. Everything not tied to the
-## desktop environments is kept: Steam, gamescope, drivers, ujust, Bazzite
-## Portal, Waydroid, Cockpit, the audio stack, and so on. Bazaar is removed
-## too: software and system management is centered on LinuxToys instead.
-## Packages that depend on the removed ones are dropped automatically as
-## well (krunner-bazaar is caught by the krunner pattern below).
+## desktop environments is kept: gamescope, drivers, ujust, Bazzite Portal,
+## Waydroid, Cockpit, the audio stack, and so on. Game launchers and
+## compatibility tools were already removed by the gaming cleanup above.
+## Bazaar is removed too: software and system management is centered on
+## LinuxToys instead. Packages that depend on the removed ones are dropped
+## automatically as well (krunner-bazaar is caught by the krunner pattern
+## below).
 
 REMOVE_PATTERNS='^(bazaar|xwaylandvideobridge|plasma-|kwin|kde|kf5-|kf6-|kio|kded|kinit|konsole|dolphin|kate|kwrite|ark|gwenview|okular|spectacle|kcalc|kfind|kdialog|kmenuedit|kinfocenter|ksystemlog|ksystemstats|kcharselect|kcolorchooser|skanpage|svgpart|kamera|print-manager|drkonqi|milou|kactivity|kwayland|kpipewire|kdecoration|breeze|oxygen|sddm|polkit-kde|xdg-desktop-portal-kde|layer-shell-qt|qqc2|libplasma|libkworkspace|libkdcraw|libkexiv2|libksane|kimageformat|khelpcenter|kfilemetadata|baloo|ksshaskpass|kwallet|krunner|kscreen|khotkeys|kuserfeedback|gnome-shell|gnome-session|gnome-settings-daemon|gnome-control-center|gnome-tour|gnome-initial-setup|gnome-software|gnome-classic-session|gnome-text-editor|gnome-calculator|gnome-font-viewer|gnome-logs|gnome-weather|gnome-maps|gnome-characters|gnome-clocks|gnome-contacts|gnome-connections|gnome-photos|gnome-screenshot|gnome-system-monitor)'
 
@@ -1600,3 +1673,13 @@ if [[ "$(systemctl is-enabled nix-daemon.socket 2>/dev/null || true)" != "masked
 fi
 
 nix --version
+
+# The package transactions after the gaming cleanup (snapd, Nix, 32-bit
+# drivers) must not pull a launcher back in through dependencies or weak
+# dependencies. The cleanup's own checks ran before those transactions.
+for game_pkg in heroic lutris steam; do
+    if rpm -q "${game_pkg}" >/dev/null 2>&1; then
+        echo "game launcher package '${game_pkg}' was installed at the end of the build" >&2
+        exit 1
+    fi
+done

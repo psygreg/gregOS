@@ -12,10 +12,10 @@
 # exposes them on every boot.
 #
 # The bundles are bind-mounted instead of symlinked. Nix buildFHSEnv wrappers
-# (umu-launcher, Faugus, Steam) bind /run but replace /usr with their own
-# root, so a /run/opengl-driver symlink farm pointing into /usr disappears
-# inside them and Proton cannot load an EGL/Vulkan driver. The mounts are made
-# read-only because the bundles belong to the immutable image.
+# (umu-launcher, Faugus, Nix-installed Steam) bind /run but replace /usr with
+# their own root, so a /run/opengl-driver symlink farm pointing into /usr
+# disappears inside them and Proton cannot load an EGL/Vulkan driver. The
+# mounts are made read-only because the bundles belong to the immutable image.
 #
 # The same trees expose CUDA, ROCm, Level Zero and OpenCL vendor libraries so
 # Nix applications can use the host GPU compute stack. Device access is
