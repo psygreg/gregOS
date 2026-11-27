@@ -47,6 +47,11 @@ environment with a tiling-compositor setup:
   The rest of Bazzite's stack is kept: gamescope, drivers, ujust, Bazzite Portal, Waydroid,
   Cockpit, the audio stack, and so on. **Bazaar** and **Bold Brew** are removed as well — software and
   system management is centered on LinuxToys instead.
+- **No Btrfs snapshot management** — Btrfs Assistant, Snapper (`snapper`, `snapper-libs`) and
+  `btrfsmaintenance` are removed, along with Bazzite Portal's "Configure btrfs snapshots" entry and the
+  `ujust configure-snapshots` recipe that drove them. Rollbacks are covered by rpm-ostree deployments, Nix
+  generations, Flatpak's commit history and Snap revisions; `btrfs-progs` stays installed for manual
+  subvolume work. See [Btrfs snapshots removed](#btrfs-snapshots-removed).
 - **Selected cross-desktop apps** — Nautilus (`nautilus`), GNOME Keyring (`gnome-keyring` with its
   `gnome-keyring-pam` greetd integration and `seahorse` to manage it), GNOME Disks
   (`gnome-disk-utility`), Showtime (`showtime`), and KDE Connect (`kde-connect`). Nautilus thumbnails
@@ -414,6 +419,33 @@ The first `snap` invocation may take a few seconds while snapd seeds the device
   requires `$HOME` to live under `/home`.
 - Snap refreshes and installs update `/var/lib/snapd`, never `/usr`, so they survive image updates and
   rollbacks untouched.
+
+# Btrfs snapshots removed
+
+Bazzite ships **Btrfs Assistant**, a Qt GUI for [Snapper](https://github.com/openSUSE/snapper), and pulls in
+`snapper`, `snapper-libs` and `btrfsmaintenance` as its weak dependencies. gregOS removes the whole stack,
+and with it Bazzite Portal's "Configure btrfs snapshots" entry, the `ujust configure-snapshots` recipe and
+the `bazzite-snapper-config` helper that launched the GUI. `btrfs-progs` (the `btrfs` command line tools)
+stays installed for manual subvolume work.
+
+Rollbacks do not depend on filesystem snapshots:
+
+- **System image** — rpm-ostree keeps the previous deployment. `rpm-ostree status` lists the deployments,
+  `rpm-ostree rollback` returns to the previous one, and any older deployment can be selected at boot.
+- **User packages** — `nix profile history` lists profile generations and `nix profile rollback` returns to
+  the previous one. Home Manager users have `home-manager generations` and `home-manager switch --rollback`.
+- **Flatpak** — `flatpak remote-info --log flathub <app>` shows the app's commit history, and
+  `flatpak update --commit=<commit> <app>` installs a specific older commit.
+- **Snap** — `snap revert <snap>` returns a snap to its previous revision.
+
+Automatic snapshots of `/var/home` are no longer configured by the image. Users who want that protection can
+take Btrfs snapshots manually, for example:
+
+```bash
+sudo btrfs subvolume snapshot /var/home /var/home-snapshot
+```
+
+or layer `snapper` from Fedora's repositories and configure it themselves.
 
 # Nix
 

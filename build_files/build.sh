@@ -576,6 +576,121 @@ if ! rpm -q seahorse >/dev/null 2>&1; then
     exit 1
 fi
 
+### Remove Btrfs Assistant and the Snapper snapshot stack
+##
+## Bazzite ships Btrfs Assistant, a Qt GUI for Snapper, and pulls in snapper,
+## snapper-libs and btrfsmaintenance through its weak dependencies. gregOS does
+## not manage Btrfs snapshots: rollbacks are covered by rpm-ostree deployments,
+## Nix generations, Flatpak's commit history and Snap revisions, all of which
+## outlive image updates independently of the filesystem. btrfs-progs stays
+## installed for manual subvolume work; only the snapshot management stack is
+## removed.
+##
+## Btrfs Assistant is not a plain leaf in integration terms: Bazzite's Portal
+## "Configure btrfs snapshots" entry and its ujust recipe drive
+## /usr/libexec/bazzite-snapper-config, which ends by launching the removed GUI.
+## Dropping only the RPM would leave a Portal entry and a ujust command that
+## fail when used, so the whole surface goes:
+##   1. the packages (btrfs-assistant, snapper, snapper-libs, btrfsmaintenance),
+##   2. the Portal entry that offers snapshot configuration,
+##   3. the ujust recipe that drives it,
+##   4. the helper script that launches Btrfs Assistant.
+##
+## Every step tolerates base-image drift: uninstalled packages are skipped and
+## the file edits only apply when their marker is present. The assertions at
+## the end fail the build if any of it comes back through a base update.
+
+btrfs_snapshot_pkgs=""
+for btrfs_snapshot_pkg in btrfs-assistant snapper snapper-libs btrfsmaintenance; do
+    if rpm -q "${btrfs_snapshot_pkg}" >/dev/null 2>&1; then
+        btrfs_snapshot_pkgs+=" ${btrfs_snapshot_pkg}"
+    fi
+done
+
+if [[ -n "${btrfs_snapshot_pkgs// /}" ]]; then
+    echo "Removing Btrfs snapshot stack:${btrfs_snapshot_pkgs}"
+    # shellcheck disable=SC2086  # intentional word-splitting of the list
+    dnf5 -y --setopt=install_weak_deps=False remove ${btrfs_snapshot_pkgs}
+else
+    echo "No Btrfs snapshot packages are installed; skipping"
+fi
+
+# Bazzite's helper is image-owned (not part of an RPM) and is what launches the
+# removed GUI after enabling snapshots.
+rm -fv /usr/libexec/bazzite-snapper-config
+
+# Bazzite Portal: drop the whole "Configure btrfs snapshots" item and its
+# options. The item sits at the same list level as the other Portal entries
+# (six spaces); matching stops at the next sibling item or section title.
+if [[ -e /usr/share/yafti/yafti.yml ]] \
+    && grep -q '^      - id: "snapper"$' /usr/share/yafti/yafti.yml; then
+    awk '
+        /^      - id: "/ {
+            if ($0 ~ /^      - id: "snapper"$/) { skip = 1; next }
+            skip = 0
+        }
+        /^  - title:/ { skip = 0 }
+        !skip
+    ' /usr/share/yafti/yafti.yml > /usr/share/yafti/yafti.yml.new
+    mv /usr/share/yafti/yafti.yml.new /usr/share/yafti/yafti.yml
+fi
+
+# ujust: drop the configure-snapshots recipe, from its comment through the
+# recipe body. The first top-level comment after the start marker is the next
+# recipe, which is kept.
+if [[ -e /usr/share/ublue-os/just/80-bazzite.just ]] \
+    && grep -q '^configure-snapshots ' /usr/share/ublue-os/just/80-bazzite.just; then
+    awk '
+        /^# Configure snapshotting for \/var\/home$/ { skip = 1; next }
+        skip && /^# / { skip = 0 }
+        !skip
+    ' /usr/share/ublue-os/just/80-bazzite.just > /usr/share/ublue-os/just/80-bazzite.just.new
+    mv /usr/share/ublue-os/just/80-bazzite.just.new /usr/share/ublue-os/just/80-bazzite.just
+fi
+
+# Fail the build if the stack or its Bazzite integration comes back.
+for btrfs_snapshot_pkg in btrfs-assistant snapper snapper-libs btrfsmaintenance; do
+    if rpm -q "${btrfs_snapshot_pkg}" >/dev/null 2>&1; then
+        echo "Btrfs snapshot package '${btrfs_snapshot_pkg}' is still installed" >&2
+        exit 1
+    fi
+done
+
+for btrfs_snapshot_file in \
+    /usr/bin/btrfs-assistant \
+    /usr/bin/btrfs-assistant-bin \
+    /usr/bin/btrfs-assistant-launcher \
+    /usr/share/applications/btrfs-assistant.desktop \
+    /usr/libexec/bazzite-snapper-config; do
+    if [[ -e "${btrfs_snapshot_file}" ]]; then
+        echo "'${btrfs_snapshot_file}' is still present after the snapshot cleanup" >&2
+        exit 1
+    fi
+done
+
+# The CLI tools are intentionally kept for manual subvolume work.
+if ! command -v btrfs >/dev/null 2>&1; then
+    echo "btrfs-progs is missing after the snapshot cleanup" >&2
+    exit 1
+fi
+
+if grep -q 'id: "snapper"' /usr/share/yafti/yafti.yml 2>/dev/null; then
+    echo "Bazzite Portal still offers the removed Snapper snapshot configuration" >&2
+    exit 1
+fi
+if grep -q 'btrfs-assistant' /usr/share/yafti/yafti.yml 2>/dev/null; then
+    echo "Bazzite Portal still references Btrfs Assistant" >&2
+    exit 1
+fi
+if grep -rq 'configure-snapshots' /usr/share/ublue-os/just/ 2>/dev/null; then
+    echo "a ujust recipe still offers the removed Snapper snapshot setup" >&2
+    exit 1
+fi
+if grep -rq 'btrfs-assistant' /usr/share/ublue-os/just/ 2>/dev/null; then
+    echo "a ujust recipe still references Btrfs Assistant" >&2
+    exit 1
+fi
+
 ### Verify the input-method stack survived every removal
 ##
 ## The ibus stack is installed in the transaction above, and the debloat right
@@ -1680,6 +1795,14 @@ nix --version
 for game_pkg in heroic lutris steam; do
     if rpm -q "${game_pkg}" >/dev/null 2>&1; then
         echo "game launcher package '${game_pkg}' was installed at the end of the build" >&2
+        exit 1
+    fi
+done
+
+# Neither may they bring the removed Btrfs snapshot stack back.
+for btrfs_snapshot_pkg in btrfs-assistant snapper snapper-libs btrfsmaintenance; do
+    if rpm -q "${btrfs_snapshot_pkg}" >/dev/null 2>&1; then
+        echo "Btrfs snapshot package '${btrfs_snapshot_pkg}' was installed at the end of the build" >&2
         exit 1
     fi
 done
