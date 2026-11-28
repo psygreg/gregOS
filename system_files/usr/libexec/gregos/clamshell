@@ -1,0 +1,452 @@
+#!/usr/bin/python3
+# gregOS laptop lid policy and clamshell mode.
+#
+# Runs as a systemd user service inside the niri session
+# (system_files/usr/lib/systemd/user/gregos-clamshell.service), started by the
+# shipped niri.service drop-in. The unit wraps it in
+# "systemd-inhibit --what=handle-lid-switch --mode=block", so logind leaves lid
+# events alone while this process runs: this daemon is the session's single lid
+# handler, and everything it cannot handle (the greeter, a TTY, the service
+# stopped by the user) falls back to logind's plain suspend from
+# /etc/systemd/logind.conf.d/10-gregos-lid.conf.
+#
+# Policy, evaluated from lid, AC and external-display state:
+#
+#   lid open                              normal, internal panel on.
+#   lid closed on battery                 hibernate when logind reports it is
+#                                          available, otherwise suspend to the
+#                                          deepest state the platform offers.
+#   lid closed on AC + external display   clamshell: turn the internal panel
+#                                          off and keep working from the
+#                                          external display.
+#   lid closed on AC, no external display suspend (the sleep-state hook picks
+#                                          s2idle for the fastest resume).
+#   external display or AC unplugged      the battery-preserving action above.
+#
+# Input devices are deliberately not part of any condition: swapping or
+# unplugging a mouse or keyboard must not change the policy.
+#
+# "External display connected" is read from the DRM connectors in sysfs. The
+# internal panel is only switched off after niri reports an active external
+# output, so a connector that claims to be connected but is not being driven
+# cannot leave the session without a display. Disabling/enabling outputs uses
+# niri's IPC. State is polled: a couple of seconds of latency on a lid event is
+# not noticeable next to a suspend or hibernate.
+#
+# Hibernation availability is the system's own answer (logind's CanHibernate),
+# so a missing/too-small swap device, a missing resume path or a kernel
+# lockdown that forbids hibernation all fall back to suspend automatically.
+
+import glob
+import json
+import os
+import signal
+import subprocess
+import time
+from enum import Enum
+from pathlib import Path
+
+LID_STATE_GLOB = "/proc/acpi/button/lid/*/state"
+POWER_SUPPLY_GLOB = "/sys/class/power_supply/*"
+DRM_CONNECTOR_GLOB = "/sys/class/drm/card*-*"
+
+# Connector names used by internal panels. Anything else that is connected is
+# an external display.
+INTERNAL_OUTPUT_PREFIXES = ("eDP-", "LVDS-", "DSI-")
+NON_DISPLAY_CONNECTOR_PREFIXES = ("Writeback", "Virtual")
+
+POLL_SECONDS = 5
+CLAMSHELL_RECHECK_SECONDS = 10
+STARTUP_GRACE_SECONDS = 10
+
+
+class Mode(Enum):
+    NORMAL = "normal"
+    CLAMSHELL = "clamshell"
+    SLEEP = "sleep"
+
+
+def log(message):
+    print(f"gregos-clamshell: {message}", flush=True)
+
+
+def read_text(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return None
+
+
+# --- lid --------------------------------------------------------------------
+
+
+def lid_state_paths():
+    return sorted(glob.glob(LID_STATE_GLOB))
+
+
+def has_battery():
+    for supply in glob.glob(POWER_SUPPLY_GLOB):
+        if read_text(os.path.join(supply, "type")) == "Battery":
+            return True
+    return False
+
+
+def has_lid_switch():
+    """True when the lid state can actually be read on this machine.
+
+    The ACPI button interface is the cheap path. Without it the switch is
+    still readable through UPower (input layer); a battery is required as a
+    sanity check so desktops do not run this service for nothing.
+    """
+    for path in lid_state_paths():
+        if read_text(path) is not None:
+            return True
+    return has_battery() and upower_bool("LidIsClosed") is not None
+
+
+def lid_closed():
+    states = [read_text(path) for path in lid_state_paths()]
+    states = [state for state in states if state is not None]
+    if states:
+        return any(state == "closed" for state in states)
+
+    # Fallback for machines without the ACPI button interface: UPower reads
+    # the same lid switch through the input layer.
+    value = upower_bool("LidIsClosed")
+    return bool(value)
+
+
+# --- power source -----------------------------------------------------------
+
+
+def upower_value(name):
+    try:
+        result = subprocess.run(
+            [
+                "busctl",
+                "get-property",
+                "org.freedesktop.UPower",
+                "/org/freedesktop/UPower",
+                "org.freedesktop.UPower",
+                name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def upower_bool(name):
+    value = upower_value(name)
+    if value == "b true":
+        return True
+    if value == "b false":
+        return False
+    return None
+
+
+def on_battery():
+    """True when no external power supply is online.
+
+    Supplies with scope "Device" are peripherals (a mouse battery, a laptop's
+    charging-only USB port); only system supplies decide the policy. If sysfs
+    exposes no usable AC entry at all, fall back to UPower. A desktop without
+    a battery is treated as being on AC, which is the safe answer: its lid
+    policy never runs anyway.
+    """
+    saw_power_input = False
+    for supply in sorted(glob.glob(POWER_SUPPLY_GLOB)):
+        supply_type = read_text(os.path.join(supply, "type"))
+        if supply_type is None or supply_type == "Battery":
+            continue
+        if read_text(os.path.join(supply, "scope")) == "Device":
+            continue
+        online = read_text(os.path.join(supply, "online"))
+        if online is None:
+            continue
+        saw_power_input = True
+        if online == "1":
+            return False
+
+    if saw_power_input:
+        return True
+
+    value = upower_bool("OnBattery")
+    if value is not None:
+        return value
+    return False
+
+
+# --- external display -------------------------------------------------------
+
+
+def is_internal_output(name):
+    return name.startswith(INTERNAL_OUTPUT_PREFIXES)
+
+
+def external_monitor_connected():
+    """True when a DRM connector that is not an internal panel is connected."""
+    for connector_dir in sorted(glob.glob(DRM_CONNECTOR_GLOB)):
+        connector = os.path.basename(connector_dir)
+        if "-" not in connector:
+            continue
+        name = connector.split("-", 1)[1]
+        if is_internal_output(name):
+            continue
+        if name.startswith(NON_DISPLAY_CONNECTOR_PREFIXES):
+            continue
+        if read_text(os.path.join(connector_dir, "status")) == "connected":
+            return True
+    return False
+
+
+# --- niri IPC ---------------------------------------------------------------
+
+
+def niri_socket():
+    configured = os.environ.get("NIRI_SOCKET")
+    if configured and os.path.exists(configured):
+        return configured
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    candidates = glob.glob(os.path.join(runtime_dir, "niri*.sock"))
+    existing = []
+    for path in candidates:
+        try:
+            existing.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+    if not existing:
+        return None
+    return max(existing)[1]
+
+
+def run_niri_capture(*args, timeout=5):
+    socket = niri_socket()
+    if socket is None:
+        return None
+
+    env = dict(os.environ)
+    env["NIRI_SOCKET"] = socket
+    try:
+        result = subprocess.run(
+            ["niri", "msg", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        log(f"niri msg {' '.join(args)} failed: {error}")
+        return None
+    if result.returncode != 0:
+        log(f"niri msg {' '.join(args)} exited {result.returncode}: {result.stderr.strip()}")
+        return None
+    return result.stdout
+
+
+def run_niri(*args):
+    return run_niri_capture(*args) is not None
+
+
+def niri_outputs():
+    stdout = run_niri_capture("--json", "outputs")
+    if stdout is None:
+        return None
+    try:
+        outputs = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        log(f"could not parse niri outputs: {error}")
+        return None
+    if not isinstance(outputs, dict):
+        log("niri returned outputs that are not a JSON object")
+        return None
+    return outputs
+
+
+def internal_output_names(outputs):
+    return sorted(name for name in outputs if is_internal_output(name))
+
+
+def external_outputs_active(outputs):
+    return [
+        name
+        for name, output in outputs.items()
+        if not is_internal_output(name)
+        and not name.startswith(NON_DISPLAY_CONNECTOR_PREFIXES)
+        and isinstance(output, dict)
+        and output.get("logical") is not None
+    ]
+
+
+def disable_internal_outputs():
+    """Turn off every internal panel niri is currently driving.
+
+    Called on entering clamshell mode and periodically afterwards. The repeat
+    is deliberate: niri's runtime output changes are temporary and can be
+    forgotten when the config is reloaded (the display setup script rewrites
+    its include at session start), so clamshell mode re-asserts itself.
+    """
+    outputs = niri_outputs()
+    if outputs is None:
+        return
+    if not external_outputs_active(outputs):
+        log("no external output is active in niri yet; leaving the internal panel on")
+        return
+    for name in internal_output_names(outputs):
+        output = outputs.get(name)
+        if isinstance(output, dict) and output.get("logical") is not None:
+            if run_niri("output", name, "off"):
+                log(f"turned off internal output {name} for clamshell mode")
+
+
+def enable_internal_outputs():
+    """Turn internal panels back on when leaving clamshell mode."""
+    outputs = niri_outputs()
+    if outputs is None:
+        return
+    for name in internal_output_names(outputs):
+        output = outputs.get(name)
+        if isinstance(output, dict) and output.get("logical") is None:
+            if run_niri("output", name, "on"):
+                log(f"turned internal output {name} back on")
+
+
+# --- sleep ------------------------------------------------------------------
+
+
+def hibernate_available():
+    """Ask logind whether hibernation is supported and configured here."""
+    try:
+        result = subprocess.run(
+            [
+                "busctl",
+                "call",
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "CanHibernate",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip().endswith('"yes"')
+
+
+def dispatch_sleep(verb):
+    # Run synchronously: on success this returns only after the system has
+    # resumed, and on failure (a block inhibitor, no suitable swap, a missing
+    # hibernate setup) its exit status lets the caller fall back.
+    try:
+        result = subprocess.run(
+            ["systemctl", verb],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        log(f"could not run systemctl {verb}: {error}")
+        return False
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        log(f"systemctl {verb} failed: {detail}")
+        return False
+    return True
+
+
+def sleep_now(on_battery_power):
+    if on_battery_power and hibernate_available():
+        log("lid closed on battery: hibernating (hibernation is available)")
+        if dispatch_sleep("hibernate"):
+            return
+        log("hibernation failed; falling back to suspend")
+    elif on_battery_power:
+        log("lid closed on battery: suspending (hibernation is not available)")
+    else:
+        log("lid closed on AC: suspending")
+    dispatch_sleep("suspend")
+
+
+# --- state machine ----------------------------------------------------------
+
+
+def desired_mode(lid_is_closed, on_battery_power, external_display):
+    if not lid_is_closed:
+        return Mode.NORMAL
+    if on_battery_power or not external_display:
+        return Mode.SLEEP
+    return Mode.CLAMSHELL
+
+
+def request_stop(signum, frame):
+    raise SystemExit(0)
+
+
+def run():
+    if not has_lid_switch():
+        log("no lid switch detected; nothing to manage")
+        return
+
+    # The service starts with the session, before niri has finished probing
+    # the DRM connectors. Give a dock a moment to settle so a slow external
+    # display is not misread as "no monitor" (which would suspend a docked
+    # laptop at login instead of entering clamshell mode).
+    time.sleep(STARTUP_GRACE_SECONDS)
+
+    mode = None
+    next_recheck = 0.0
+    try:
+        while True:
+            lid_is_closed = lid_closed()
+            on_battery_power = on_battery()
+            external_display = external_monitor_connected()
+            new_mode = desired_mode(lid_is_closed, on_battery_power, external_display)
+
+            if new_mode is not mode:
+                previous = mode.value if mode is not None else "start"
+                log(
+                    f"{previous} -> {new_mode.value} "
+                    f"(lid {'closed' if lid_is_closed else 'open'}, "
+                    f"{'battery' if on_battery_power else 'AC'}, "
+                    f"external display {'connected' if external_display else 'not connected'})"
+                )
+                if mode is Mode.CLAMSHELL:
+                    enable_internal_outputs()
+                if new_mode is Mode.CLAMSHELL:
+                    disable_internal_outputs()
+                    next_recheck = time.monotonic() + CLAMSHELL_RECHECK_SECONDS
+                elif new_mode is Mode.SLEEP:
+                    sleep_now(on_battery_power)
+                mode = new_mode
+            elif mode is Mode.CLAMSHELL and time.monotonic() >= next_recheck:
+                disable_internal_outputs()
+                next_recheck = time.monotonic() + CLAMSHELL_RECHECK_SECONDS
+
+            time.sleep(POLL_SECONDS)
+    finally:
+        # Re-enable the panel if the service is stopped (or niri disappears)
+        # while the lid is shut in clamshell mode. If niri is already gone the
+        # IPC calls fail harmlessly; the next session starts with its normal
+        # output configuration anyway.
+        if mode is Mode.CLAMSHELL:
+            enable_internal_outputs()
+
+
+def main():
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    try:
+        run()
+    except SystemExit:
+        pass
+
+
+if __name__ == "__main__":
+    main()

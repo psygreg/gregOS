@@ -1,0 +1,20 @@
+[Unit]
+Description=gregOS laptop lid policy and clamshell mode
+Documentation=https://github.com/psygreg/gregOS
+# The daemon controls niri outputs over the session's IPC socket, so it is a
+# per-user service, not a system one. It is started by the shipped niri.service
+# drop-in (10-gregos-clamshell.conf); PartOf keeps it tied to the compositor:
+# stop with niri, restart with it.
+PartOf=niri.service
+
+[Service]
+Type=exec
+# The inhibitor makes systemd-logind ignore lid events while the daemon runs.
+# 10-gregos-lid.conf pins logind's fallback action for when the daemon is not
+# running (greeter, TTY, non-niri session, or the service stopped by hand).
+ExecStart=systemd-inhibit --what=handle-lid-switch --mode=block --who="gregOS clamshell mode" --why="Handle the laptop lid in the niri session" /usr/libexec/gregos/clamshell
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

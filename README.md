@@ -73,6 +73,11 @@ environment with a tiling-compositor setup:
   on the system `PATH` (`/usr/bin/niri-resume`, fetched at build time from its latest GitHub release, so
   image builds automatically pick up new versions); see [Using the desktop](#using-the-desktop) for the
   details.
+- **Laptop lid policy and clamshell mode** — closing the lid on battery hibernates when the system
+  supports it and suspends otherwise; on AC with an external display it keeps the session alive in
+  clamshell mode with the internal panel off, and unplugging power or the display falls back to the
+  battery-preserving action. Suspends use `s2idle` on AC and `deep` (S3) on battery when the
+  firmware exposes them. See [Laptop lid and clamshell mode](#laptop-lid-and-clamshell-mode).
 - **[LinuxToys](https://github.com/psygreg/linuxtoys)** is layered on top, installed at build time from the
   `.rpm` asset of its latest GitHub release — so every image build automatically picks up the newest
   version. It replaces Bazaar and Bold Brew as the image's software and system manager. Its well-known optimization tweaks are also baked into the image.
@@ -274,6 +279,81 @@ launcher — each action also has its numbered shortcut while the panel is open)
 | Power button | Save the session, then shut down (works while locked; a long press outside a niri session powers off through logind) |
 
 The mouse-wheel binds use a 150 ms cooldown so one scroll step doesn't move several places at once.
+
+## Laptop lid and clamshell mode
+
+A laptop lid closes into one of two paths, implemented by `gregos-clamshell`, a systemd user service
+started with the niri session:
+
+- **On battery** — the machine hibernates when logind reports hibernation as available
+  (`CanHibernate`), and suspends otherwise. This applies even with an external display attached:
+  battery preservation wins. If it suspends, the sleep-state hook below puts it into `deep` (S3)
+  when the platform supports it.
+- **On AC without an external display** — there is no display to keep the session for, so the
+  machine suspends; the sleep-state hook picks `s2idle` for the fastest resume.
+- **On AC with an external display connected** — clamshell mode. Niri keeps the session running on
+  the external display and the internal panel is turned off (`niri msg output <name> off`). Mouse,
+  keyboard and other input devices are deliberately not part of the condition, so swapping or
+  unplugging peripherals cannot kick the machine out of the mode. An output is only turned off after
+  niri reports an external display that it is actually driving, so a connector that merely claims to
+  be connected cannot leave the session without a display.
+- **Opening the lid** — leaves clamshell mode and turns the internal panel back on.
+- **Unplugging the external display or AC while in clamshell** — immediately re-evaluates the policy
+  and takes the battery-preserving action above.
+
+Sleep state selection is separate from the lid policy and applies to every suspend the system
+performs — Noctalia's idle and Lock & Suspend actions, logind, a manual `systemctl suspend`, and the
+lid policy. A system-sleep hook (`/usr/lib/systemd/system-sleep/50-gregos-sleep-state`) rewrites
+`/sys/power/mem_sleep` immediately before the suspend is entered. The choices are:
+
+- **On AC** — `s2idle` when the platform exposes it (the fastest resume), then `shallow`, then
+  `deep`. There is no battery to preserve.
+- **On battery** — `deep` (ACPI S3) when exposed, then `shallow`, then `s2idle`. `deep` draws much
+  less than `s2idle` while still resuming quickly.
+- To keep a fixed state instead, create the empty marker `/etc/gregos/no-sleep-state-hook`
+  (`sudo install -d /etc/gregos && sudo touch /etc/gregos/no-sleep-state-hook`). The hook then
+  leaves `/sys/power/mem_sleep` alone, so the kernel default (or `mem_sleep_default=`) applies.
+
+("S2" is not a usable ACPI state on PCs: the fast state is `s2idle` (suspend-to-idle), and `deep`
+is ACPI S3.)
+
+Check what the firmware offers with `cat /sys/power/mem_sleep` (the bracketed value is the current
+one). On s2idle-only laptops, battery suspends remain `s2idle`; closing the lid on battery still
+hibernates when hibernation is available.
+
+Hibernation availability is the system's own answer: logind checks for a suitable swap device and
+resume path, and kernel lockdown can forbid hibernation. gregOS ships no swap device, so a fresh
+install suspends; create a swap file or partition (see
+[Swap: zswap instead of zram](#swap-zswap-instead-of-zram)) if you want hibernate. The EAC2 boot
+baseline's `lockdown=integrity` is another restriction that can make logind report hibernation as
+unavailable on a given machine.
+
+A sleep state is fixed at the moment the machine goes to sleep. Linux cannot promote `s2idle` to S3
+or turn a running suspend into hibernation while suspended, and firmware cannot write a hibernation
+image. If AC is unplugged during `s2idle`, the laptop stays in `s2idle` until something wakes it; if
+the firmware is configured to wake on AC changes the session policy re-evaluates on resume, but most
+laptops do not wake on unplug. If that drain matters more than resume speed, opt out of the hook
+(the marker file above) and set `mem_sleep_default=deep` so every suspend uses S3. Closing the lid on
+battery, or unplugging AC while the system is awake, does take the battery-preserving path
+immediately.
+
+Noctalia's idle actions call a plain suspend. The shipped Noctalia config leaves its stock
+"Lock & Suspend" idle behavior disabled, so idle sleep happens only if it is enabled in the
+settings. When it is, the sleep-state hook makes it `s2idle` on AC and `deep` on battery. Idle
+suspend does not automatically become hibernate; use a Noctalia custom idle command that runs
+`systemctl hibernate` if that is wanted, or close the lid, which does hibernate on battery when
+available.
+
+While the niri session runs, the daemon holds a logind `handle-lid-switch` block inhibitor, so logind
+does not apply its own action in parallel. It is started by a drop-in on `niri.service`
+(`/usr/lib/systemd/user/niri.service.d/10-gregos-clamshell.conf`), so every niri session gets the
+policy regardless of the user's niri config. Outside that session (the Noctalia greeter, a TTY, a
+non-niri session, or `systemctl --user stop gregos-clamshell`) logind handles the lid with the
+fallback pinned in `/etc/systemd/logind.conf.d/10-gregos-lid.conf`: suspend on every lid close. To
+keep that plain suspend permanently, mask the unit:
+`systemctl --user mask gregos-clamshell.service`. The session policy needs niri's IPC socket, which
+is why it is a user service and not a system one. Mode changes and failed IPC or sleep calls are
+logged to the user journal (`journalctl --user -u gregos-clamshell`).
 
 # Credential storage: one supervised GNOME Keyring
 

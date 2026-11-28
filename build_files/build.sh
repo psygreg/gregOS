@@ -1249,6 +1249,177 @@ for noctalia_actions_file in /usr/share/gregos/noctalia/15-gregos-session-action
     done
 done
 
+### Laptop lid, clamshell mode and sleep states
+##
+## The image ships five pieces for laptop power behavior:
+##
+##   /usr/libexec/gregos/clamshell
+##       The session's lid handler. It reads the lid state, the AC state and
+##       the DRM connectors, turns internal panels off/on through niri's IPC,
+##       and runs hibernate or suspend. On battery it hibernates when logind
+##       reports availability (CanHibernate) and suspends otherwise; on AC it
+##       suspends and lets the sleep-state hook pick the fast state.
+##
+##   /usr/lib/systemd/system-sleep/50-gregos-sleep-state
+##       Runs before every suspend (lid policy, Noctalia idle and Lock &
+##       Suspend, logind, manual) and writes /sys/power/mem_sleep: s2idle on
+##       AC for the fastest resume, deep (ACPI S3) on battery to preserve it.
+##       Hibernation is a different sleep action and is not selected here.
+##       The state cannot be changed once the machine is asleep.
+##
+##   /usr/lib/systemd/user/gregos-clamshell.service
+##       The per-user unit. It must be a user service: turning an output off is
+##       niri IPC, which needs the session socket. The unit wraps the daemon in
+##       "systemd-inhibit --what=handle-lid-switch --mode=block" so logind
+##       leaves lid events to the daemon instead of suspending in parallel.
+##
+##   /usr/lib/systemd/user/niri.service.d/10-gregos-clamshell.conf
+##       Starts the unit with the compositor, for every user. A drop-in is used
+##       instead of a spawn-at-startup line so the service also reaches homes
+##       whose niri config is a stale, user-modified copy of an older full
+##       config (the config seeder leaves those untouched).
+##
+##   /etc/systemd/logind.conf.d/10-gregos-lid.conf
+##       The fallback outside the niri session (greeter, TTY, non-niri session,
+##       service stopped by the user): suspend on every lid close. The
+##       per-context keys are pinned because logind otherwise ignores
+##       HandleLidSwitchExternalPower and defaults HandleLidSwitchDocked to
+##       ignore, which would leave a docked laptop awake on battery.
+##
+## Losing any piece silently reverts lid handling to logind's plain suspend
+## (or worse, logind's ignore when docked) or leaves every suspend on the
+## kernel default state, so verify the whole chain here, plus syntax checks of
+## the Python daemon and the sleep hook. The daemon is a long-running process
+## started at login: a syntax error would show up as a restart loop on a
+## user's laptop, not as a build failure, without this check.
+
+for clamshell_file in \
+    /usr/libexec/gregos/clamshell \
+    /usr/lib/systemd/system-sleep/50-gregos-sleep-state \
+    /usr/lib/systemd/user/gregos-clamshell.service \
+    /usr/lib/systemd/user/niri.service.d/10-gregos-clamshell.conf \
+    /etc/systemd/logind.conf.d/10-gregos-lid.conf; do
+    if [[ ! -e "${clamshell_file}" ]]; then
+        echo "clamshell support file is missing: ${clamshell_file}" >&2
+        exit 1
+    fi
+done
+
+for clamshell_binary in \
+    /usr/libexec/gregos/clamshell \
+    /usr/lib/systemd/system-sleep/50-gregos-sleep-state; do
+    if [[ ! -x "${clamshell_binary}" ]]; then
+        echo "power support script is not executable: ${clamshell_binary}" >&2
+        exit 1
+    fi
+done
+
+# The drop-in is only read while the niri unit it extends exists. Missing it
+# would leave the daemon unstarted on every new image build.
+if [[ ! -e /usr/lib/systemd/user/niri.service ]]; then
+    echo "niri.service is missing; the clamshell drop-in has nothing to attach to" >&2
+    exit 1
+fi
+for clamshell_dropin_setting in \
+    'Wants=gregos-clamshell.service' \
+    'After=gregos-clamshell.service'; do
+    if ! grep -qxF "${clamshell_dropin_setting}" \
+        /usr/lib/systemd/user/niri.service.d/10-gregos-clamshell.conf; then
+        echo "'${clamshell_dropin_setting}' is missing from the clamshell niri drop-in" >&2
+        exit 1
+    fi
+done
+
+for clamshell_unit_setting in \
+    'ExecStart=systemd-inhibit --what=handle-lid-switch' \
+    'PartOf=niri.service' \
+    'Restart=on-failure'; do
+    if ! grep -qF "${clamshell_unit_setting}" /usr/lib/systemd/user/gregos-clamshell.service; then
+        echo "'${clamshell_unit_setting}' is missing from gregos-clamshell.service" >&2
+        exit 1
+    fi
+done
+
+for lid_setting in \
+    'HandleLidSwitch=suspend' \
+    'HandleLidSwitchExternalPower=suspend' \
+    'HandleLidSwitchDocked=suspend' \
+    'LidSwitchIgnoreInhibited=yes'; do
+    if ! grep -qxF "${lid_setting}" /etc/systemd/logind.conf.d/10-gregos-lid.conf; then
+        echo "'${lid_setting}' is missing from the lid logind drop-in" >&2
+        exit 1
+    fi
+done
+
+# The daemon must keep asking logind before choosing hibernate; a hardcoded
+# preference would try to hibernate on systems without swap or with lockdown.
+if ! grep -qF 'CanHibernate' /usr/libexec/gregos/clamshell; then
+    echo "the clamshell daemon no longer checks whether hibernation is available" >&2
+    exit 1
+fi
+
+# Compile-check the daemon without leaving bytecode in the image.
+if ! PYTHONPYCACHEPREFIX=/tmp/gregos-pycache \
+    python3 -m py_compile /usr/libexec/gregos/clamshell; then
+    echo "the clamshell daemon has a Python syntax error" >&2
+    exit 1
+fi
+
+# The sleep-state hook is a root script that runs immediately before every
+# suspend; a syntax error would be ignored by systemd-sleep and leave the
+# machine on whatever state mem_sleep last had.
+if ! bash -n /usr/lib/systemd/system-sleep/50-gregos-sleep-state; then
+    echo "the sleep-state hook has a shell syntax error" >&2
+    exit 1
+fi
+for sleep_hook_marker in \
+    '/sys/power/mem_sleep' \
+    's2idle' \
+    'deep' \
+    'SYSTEMD_SLEEP_ACTION' \
+    'no-sleep-state-hook'; do
+    if ! grep -qF "${sleep_hook_marker}" /usr/lib/systemd/system-sleep/50-gregos-sleep-state; then
+        echo "'${sleep_hook_marker}' is missing from the sleep-state hook" >&2
+        exit 1
+    fi
+done
+
+# Exercise the AC and battery choices against a throwaway sysfs tree. The
+# hook's path variables are redirected in a copy, so this never touches the
+# build host's real sleep state.
+sleep_state_test="$(mktemp -d)"
+trap 'rm -rf "${sleep_state_test}"' EXIT
+mkdir -p "${sleep_state_test}/power_supply/AC0"
+printf 'Mains\n' > "${sleep_state_test}/power_supply/AC0/type"
+printf 'System\n' > "${sleep_state_test}/power_supply/AC0/scope"
+printf '1\n' > "${sleep_state_test}/power_supply/AC0/online"
+sed -e "s|^mem_sleep_file=.*|mem_sleep_file=\"${sleep_state_test}/mem_sleep\"|" \
+    -e "s|^power_supply_glob=.*|power_supply_glob=\"${sleep_state_test}/power_supply/*\"|" \
+    -e "s|^disable_marker=.*|disable_marker=\"${sleep_state_test}/no-sleep-state-hook\"|" \
+    /usr/lib/systemd/system-sleep/50-gregos-sleep-state > "${sleep_state_test}/hook"
+chmod +x "${sleep_state_test}/hook"
+if ! grep -qF "${sleep_state_test}/mem_sleep" "${sleep_state_test}/hook" \
+    || ! grep -qF "${sleep_state_test}/power_supply/*" "${sleep_state_test}/hook" \
+    || ! grep -qF "${sleep_state_test}/no-sleep-state-hook" "${sleep_state_test}/hook"; then
+    echo "the sleep-state test could not redirect the hook's paths" >&2
+    exit 1
+fi
+
+printf 's2idle [deep]\n' > "${sleep_state_test}/mem_sleep"
+SYSTEMD_SLEEP_ACTION=suspend "${sleep_state_test}/hook" pre suspend
+if [[ "$(cat "${sleep_state_test}/mem_sleep")" != "s2idle" ]]; then
+    echo "the sleep-state hook did not select s2idle on AC" >&2
+    exit 1
+fi
+
+printf '0\n' > "${sleep_state_test}/power_supply/AC0/online"
+printf 's2idle [deep]\n' > "${sleep_state_test}/mem_sleep"
+SYSTEMD_SLEEP_ACTION=suspend "${sleep_state_test}/hook" pre suspend
+if [[ "$(cat "${sleep_state_test}/mem_sleep")" != "deep" ]]; then
+    echo "the sleep-state hook did not select deep on battery" >&2
+    exit 1
+fi
+
 ### GnuPG: keep keyboxd disabled
 ##
 ## gpg 2.4.1+ writes an active "use-keyboxd" into ~/.gnupg/common.conf the first

@@ -1,0 +1,123 @@
+#!/bin/bash
+# gregOS: choose the kernel suspend state (s2idle vs deep) from the power source.
+#
+# systemd-sleep runs this immediately before it writes /sys/power/state, after
+# it has applied any MemorySleepMode= from sleep.conf. The state written here
+# is therefore the one the impending suspend uses. The hook runs for every
+# suspend path: the lid policy, Noctalia's Lock & Suspend, logind idle, and a
+# manual `systemctl suspend`.
+#
+#   on AC      -> s2idle when available. It resumes fastest, and there is no
+#                 battery to preserve.
+#   on battery -> deep (ACPI S3) when available. It draws much less than
+#                 s2idle and still resumes quickly. If the platform only
+#                 exposes s2idle, keep it; the lid policy uses hibernate
+#                 directly when that is available.
+#
+# Hibernation is deliberately not selected here: this hook only picks among
+# the "mem" states. Hibernate is a different sleep action (disk), chosen by
+# the caller (gregos-clamshell on battery, an idle action, the user).
+#
+# A sleep state cannot be changed once the machine is asleep. This hook only
+# runs before sleeping, so a laptop that loses AC during s2idle stays in
+# s2idle until something wakes it. See the README for that limitation.
+#
+# To opt out and keep a fixed state instead, create the empty file
+# /etc/gregos/no-sleep-state-hook. The hook then leaves /sys/power/mem_sleep
+# alone, so the kernel default (or mem_sleep_default=) applies.
+
+set -u
+
+phase="${1:-}"
+action="${SYSTEMD_SLEEP_ACTION:-${2:-}}"
+
+[[ "$phase" == "pre" ]] || exit 0
+case "$action" in
+    suspend|suspend-after-failed-hibernate|suspend-then-hibernate) ;;
+    *) exit 0 ;;
+esac
+
+mem_sleep_file="/sys/power/mem_sleep"
+power_supply_glob="/sys/class/power_supply/*"
+disable_marker="/etc/gregos/no-sleep-state-hook"
+
+if [[ -e "$disable_marker" ]]; then
+    echo "gregos-sleep-state: disabled by ${disable_marker}; leaving the state alone"
+    exit 0
+fi
+
+[[ -r "$mem_sleep_file" ]] || exit 0
+
+read -r mem_sleep < "$mem_sleep_file" || exit 0
+
+modes=()
+read -r -a tokens <<< "$mem_sleep"
+for token in "${tokens[@]}"; do
+    token="${token#[}"
+    token="${token%]}"
+    modes+=("$token")
+done
+
+supports_mode() {
+    local wanted="$1" mode
+    for mode in "${modes[@]}"; do
+        [[ "$mode" == "$wanted" ]] && return 0
+    done
+    return 1
+}
+
+on_ac=0
+saw_power_input=0
+has_battery=0
+
+# shellcheck disable=SC2086  # intentional glob expansion
+for supply in $power_supply_glob; do
+    [[ -r "$supply/type" ]] || continue
+    supply_type="$(cat "$supply/type")"
+    if [[ "$supply_type" == "Battery" ]]; then
+        has_battery=1
+        continue
+    fi
+    if [[ -r "$supply/scope" ]] && [[ "$(cat "$supply/scope")" == "Device" ]]; then
+        continue
+    fi
+    [[ -r "$supply/online" ]] || continue
+    saw_power_input=1
+    if [[ "$(cat "$supply/online")" == "1" ]]; then
+        on_ac=1
+        break
+    fi
+done
+
+if (( saw_power_input == 0 && has_battery == 0 )); then
+    # Desktops have no AC supply node; treat them as powered.
+    on_ac=1
+fi
+
+if (( on_ac )); then
+    preference=(s2idle shallow deep)
+    power_label="AC"
+else
+    preference=(deep shallow s2idle)
+    power_label="battery"
+fi
+
+chosen=""
+for candidate in "${preference[@]}"; do
+    if supports_mode "$candidate"; then
+        chosen="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$chosen" ]]; then
+    echo "gregos-sleep-state: no known suspend state in '${mem_sleep}' (power=${power_label}); leaving it unchanged" >&2
+    exit 0
+fi
+
+if ! printf '%s' "$chosen" > "$mem_sleep_file"; then
+    echo "gregos-sleep-state: failed to write '${chosen}' to ${mem_sleep_file}" >&2
+    exit 0
+fi
+
+echo "gregos-sleep-state: power=${power_label}; mem_sleep=${chosen} (available: ${modes[*]})"
